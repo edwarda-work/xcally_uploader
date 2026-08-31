@@ -9,6 +9,7 @@ class MarketCode(str, Enum):
     GH = "GH"
     UG = "UG"
     ZA = "ZA"
+    ZM = "ZM"
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ MARKETS: dict[MarketCode, MarketConfig] = {
     MarketCode.GH: _market(MarketCode.GH, "Ghana", "Gh"),
     MarketCode.UG: _market(MarketCode.UG, "Uganda", "Ug"),
     MarketCode.ZA: _market(MarketCode.ZA, "South Africa", "Za", {"BANK_ACCOUNT_NUMBER"}),
+    MarketCode.ZM: _market(MarketCode.ZM, "Zambia", "Zm"),
 }
 
 
@@ -105,4 +107,4 @@ def get_market(value: str) -> MarketConfig:
     try:
         return MARKETS[MarketCode(value.strip().upper())]
     except (KeyError, ValueError, AttributeError) as exc:
-        raise ValueError("Market must be one of GH, UG, or ZA.") from exc
+        raise ValueError("Market must be one of GH, UG, ZA, or ZM.") from exc
