@@ -6,9 +6,10 @@ A market-aware automation service for validating CSV contact lists and uploading
 
 | Code | Market | List prefix | Schema |
 |---|---|---|---|
-| `GH` | Ghana | `Gh_` | Shared GH/UG schema |
-| `UG` | Uganda | `Ug_` | Shared GH/UG schema |
+| `GH` | Ghana | `Gh_` | Shared GH/UG/ZM schema |
+| `UG` | Uganda | `Ug_` | Shared GH/UG/ZM schema |
 | `ZA` | South Africa | `Za_` | Shared schema plus `BANK_ACCOUNT_NUMBER` |
+| `ZM` | Zambia | `Zm_` | Shared GH/UG/ZM schema |
 
 Market definitions live in `app/domain.py`. Add ZA-only headers to the ZA configuration rather than adding market conditionals to the upload workflow.
 
