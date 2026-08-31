@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xCALLY Upload Automation</title>
+  <style>
+    :root { --cherry:#D6086B; --white:#F7FAF9; --black:#212726; --muted:#697270; --line:#dfe5e3; --soft:#f0f4f2; --danger:#b42318; --success:#147a4b; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--black); background:var(--white); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    button,input,select { font:inherit; }
+    header { background:var(--black); color:var(--white); }
+    .header-inner { max-width:1040px; margin:auto; min-height:72px; padding:0 24px; display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    .brand { font-weight:800; letter-spacing:-.02em; }
+    .brand-mark { color:var(--cherry); }
+    .status { font-size:13px; color:#c7cfcd; }
+    .status::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; background:#f59e0b; }
+    .status.ok::before { background:#37c887; }
+    .status.error::before { background:#f97066; }
+    nav { border-bottom:1px solid var(--line); background:#fff; }
+    .nav-inner { max-width:1040px; margin:auto; padding:0 24px; display:flex; gap:28px; }
+    .nav-button { padding:17px 2px 14px; color:var(--muted); background:none; border:0; border-bottom:3px solid transparent; cursor:pointer; font-weight:700; }
+    .nav-button.active { color:var(--black); border-color:var(--cherry); }
+    main { max-width:1040px; margin:0 auto; padding:42px 24px 70px; }
+    .tab { display:none; }
+    .tab.active { display:block; }
+    h1 { margin:0 0 8px; font-size:30px; letter-spacing:-.04em; }
+    .lead { margin:0 0 32px; color:var(--muted); }
+    .card { padding:24px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 1px 2px rgba(33,39,38,.04); margin-bottom:18px; }
+    .section-title { margin:0 0 14px; font-size:14px; font-weight:800; }
+    .market-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+    .market { position:relative; display:block; cursor:pointer; }
+    .market input { position:absolute; opacity:0; pointer-events:none; }
+    .market-content { display:flex; align-items:center; justify-content:space-between; min-height:70px; padding:15px 17px; border:1px solid var(--line); border-radius:10px; transition:.15s ease; }
+    .market input:checked + .market-content { border-color:var(--cherry); box-shadow:0 0 0 2px rgba(214,8,107,.12); background:#fff8fb; }
+    .market-name { display:block; font-weight:750; }
+    .market-code { color:var(--muted); font-size:12px; }
+    .prefix { color:var(--cherry); font-weight:800; font-size:13px; }
+    .credentials-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .field span { display:block; margin-bottom:7px; color:var(--muted); font-size:12px; font-weight:700; }
+    .field input,.filter { width:100%; border:1px solid var(--line); border-radius:9px; background:#fff; padding:11px 12px; color:var(--black); outline:none; }
+    .field input:focus,.filter:focus { border-color:var(--cherry); box-shadow:0 0 0 2px rgba(214,8,107,.1); }
+    .help { margin-top:10px; color:var(--muted); font-size:12px; }
+    .drop-zone { padding:44px 24px; border:1.5px dashed #aeb8b5; border-radius:14px; background:#fff; text-align:center; cursor:pointer; transition:.15s ease; }
+    .drop-zone:hover,.drop-zone.drag { border-color:var(--cherry); background:#fff8fb; }
+    .drop-icon { width:44px; height:44px; display:grid; place-items:center; margin:0 auto 12px; border-radius:50%; background:#fee8f3; color:var(--cherry); font-size:22px; font-weight:600; }
+    .drop-title { font-weight:800; }
+    .drop-help { margin-top:5px; color:var(--muted); font-size:13px; }
+    #file-input { display:none; }
+    .queue { margin:16px 0; display:grid; gap:9px; }
+    .file-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:13px; padding:13px 15px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+    .file-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; font-size:14px; }
+    .file-detail { margin-top:3px; color:var(--muted); font-size:12px; }
+    .badge { display:inline-flex; border-radius:999px; padding:4px 9px; background:var(--soft); color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; }
+    .badge.success { color:var(--success); background:#e8f7ef; }
+    .badge.failed { color:var(--danger); background:#ffebe9; }
+    .badge.uploading { color:var(--cherry); background:#fee8f3; }
+    .badge.uploading::before { content:""; width:10px; height:10px; margin-right:6px; border:2px solid rgba(214,8,107,.25); border-top-color:var(--cherry); border-radius:50%; animation:spin .7s linear infinite; }
+    .remove { padding:5px; border:0; background:none; color:var(--muted); cursor:pointer; }
+    .actions { display:flex; align-items:center; gap:10px; margin-top:18px; }
+    .button { border:0; border-radius:9px; padding:11px 17px; cursor:pointer; font-weight:800; }
+    .button:disabled { opacity:.42; cursor:not-allowed; }
+    .button-primary { color:#fff; background:var(--cherry); }
+    .button.loading { display:inline-flex; align-items:center; gap:8px; }
+    .button.loading::before { content:""; width:13px; height:13px; border:2px solid rgba(255,255,255,.4); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .button-secondary { color:var(--black); background:var(--soft); }
+    .count { color:var(--muted); font-size:13px; margin-left:4px; }
+    .history-head { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+    .history-actions { display:flex; gap:9px; }
+    .filter { min-width:180px; }
+    .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:18px; }
+    .stat { padding:17px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+    .stat-label { color:var(--muted); font-size:12px; }
+    .stat-value { margin-top:4px; font-size:25px; font-weight:800; }
+    .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:12px; background:#fff; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { padding:13px 14px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+    th { color:var(--muted); background:var(--soft); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+    tr:last-child td { border-bottom:0; }
+    .empty { padding:42px; text-align:center; color:var(--muted); border:1px solid var(--line); border-radius:12px; background:#fff; }
+    @media (max-width:700px) { .market-grid,.credentials-grid,.stats { grid-template-columns:1fr; } .history-head { align-items:flex-start; flex-direction:column; } .header-inner,main,.nav-inner { padding-left:16px; padding-right:16px; } .file-row { grid-template-columns:minmax(0,1fr) auto; } .remove { display:none; } }
+  </style>
+</head>
+<body>
+  <header><div class="header-inner"><div class="brand"><span class="brand-mark">●</span> xCALLY Upload Automation</div><div id="server-status" class="status">Checking configuration</div></div></header>
+  <nav><div class="nav-inner"><button class="nav-button active" data-tab="upload">Upload</button><button class="nav-button" data-tab="history">History</button></div></nav>
+  <main>
+    <section id="upload" class="tab active">
+      <h1>Upload contact lists</h1><p class="lead">Choose the market, add CSV files, and send them securely to xCALLY.</p>
+      <div class="card">
+        <p class="section-title">1. Select market</p>
+        <div id="market-grid" class="market-grid" role="radiogroup" aria-label="Market"></div>
+      </div>
+      <div class="card">
+        <p class="section-title">2. xCALLY credentials</p>
+        <div class="credentials-grid">
+          <label class="field"><span>Username</span><input id="username" autocomplete="username" placeholder="Enter username"></label>
+          <label class="field"><span>Password</span><input id="password" type="password" autocomplete="current-password" placeholder="Enter password"></label>
+        </div>
+        <div class="help">Credentials are used for this request only and are not saved in upload history.</div>
+      </div>
+      <p class="section-title">3. Select CSV files</p>
+      <div id="drop-zone" class="drop-zone" tabindex="0" role="button">
+        <div class="drop-icon">↑</div><div class="drop-title">Drop CSV files here</div><div class="drop-help">or click to browse · multiple files supported · 60 MB maximum per file</div>
+      </div>
+      <input id="file-input" type="file" accept=".csv,text/csv" multiple>
+      <div id="queue" class="queue"></div>
+      <div class="actions"><button id="upload-button" class="button button-primary" disabled>Upload files</button><button id="clear-button" class="button button-secondary">Clear</button><span id="count" class="count"></span></div>
+    </section>
+    <section id="history" class="tab">
+      <div class="history-head"><div><h1>Upload history</h1><p class="lead" style="margin:5px 0 0">Review results across all markets.</p></div><div class="history-actions"><select id="history-filter" class="filter" aria-label="Filter market"><option value="">All markets</option></select><button id="clear-history" class="button button-secondary">Clear history</button></div></div>
+      <div id="stats" class="stats"></div><div id="history-content"></div>
+    </section>
+  </main>
+  <script>
+    const state = { files: [], uploading: false, configured: false, markets: [] };
+    const $ = id => document.getElementById(id);
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const selectedMarket = () => document.querySelector('input[name="market"]:checked')?.value || '';
+    const credentialsReady = () => state.configured || ($('username').value.trim() && $('password').value);
+
+    function updateCredentialStatus() {
+      const indicator = $('server-status');
+      if (state.configured) {
+        indicator.textContent = 'Server credentials configured';
+        indicator.className = 'status ok';
+      } else if ($('username').value.trim() && $('password').value) {
+        indicator.textContent = 'Session credentials ready';
+        indicator.className = 'status ok';
+      } else {
+        indicator.textContent = 'Session credentials required';
+        indicator.className = 'status';
+      }
+    }
+
+    async function initialize() {
+      try {
+        const response = await fetch('/api/status');
+        if (!response.ok) throw new Error();
+        const data = await response.json();
+        state.configured = Boolean(data.ready); state.markets = data.markets || [];
+        updateCredentialStatus();
+        $('market-grid').innerHTML = state.markets.map(m => `<label class="market"><input type="radio" name="market" value="${escapeHtml(m.code)}"><span class="market-content"><span><span class="market-name">${escapeHtml(m.name)}</span><span class="market-code">${escapeHtml(m.code)}</span></span><span class="prefix">${escapeHtml(m.prefix)}_</span></span></label>`).join('');
+        $('history-filter').innerHTML += state.markets.map(m => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.name)}</option>`).join('');
+        document.querySelectorAll('input[name="market"]').forEach(input => input.addEventListener('change', updateActions));
+      } catch {
+        $('server-status').textContent = 'Server unavailable'; $('server-status').className = 'status error';
+      }
+      updateActions();
+    }
+
+    document.querySelectorAll('.nav-button').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.nav-button,.tab').forEach(node => node.classList.remove('active'));
+      button.classList.add('active'); $(button.dataset.tab).classList.add('active');
+      if (button.dataset.tab === 'history') loadHistory();
+    }));
+
+    const dropZone = $('drop-zone'), fileInput = $('file-input');
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') fileInput.click(); });
+    dropZone.addEventListener('dragover', event => { event.preventDefault(); dropZone.classList.add('drag'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+    dropZone.addEventListener('drop', event => { event.preventDefault(); dropZone.classList.remove('drag'); addFiles([...event.dataTransfer.files]); });
+    fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
+
+    function addFiles(files) {
+      files.filter(file => file.name.toLowerCase().endsWith('.csv')).forEach(file => {
+        if (!state.files.some(item => item.file.name === file.name && item.file.size === file.size)) state.files.push({ id: crypto.randomUUID(), file, status:'pending', result:null });
+      });
+      renderQueue();
+    }
+    function formatSize(bytes) { return bytes < 1048576 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1048576).toFixed(1)} MB`; }
+    function renderQueue() {
+      $('queue').innerHTML = state.files.map(item => {
+        const detail = item.result ? (item.result.status === 'success' ? `List ${item.result.list_id}${item.result.skipped_headers?.length ? ` · ${item.result.skipped_headers.length} skipped fields` : ''}` : item.result.message) : formatSize(item.file.size);
+        return `<div class="file-row"><div><div class="file-name" title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</div><div class="file-detail">${escapeHtml(detail)}</div></div><span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span><button class="remove" data-remove="${escapeHtml(item.id)}" aria-label="Remove file">✕</button></div>`;
+      }).join('');
+      document.querySelectorAll('[data-remove]').forEach(button => button.addEventListener('click', () => { if (!state.uploading) { state.files = state.files.filter(item => item.id !== button.dataset.remove); renderQueue(); } }));
+      $('count').textContent = state.files.length ? `${state.files.length} file${state.files.length === 1 ? '' : 's'} queued` : '';
+      updateActions();
+    }
+    function updateActions() { $('upload-button').disabled = state.uploading || !state.files.some(item => item.status === 'pending') || !selectedMarket(); }
+    ['username', 'password'].forEach(id => $(id).addEventListener('input', () => { updateCredentialStatus(); updateActions(); }));
+    $('clear-button').addEventListener('click', () => { if (!state.uploading) { state.files = []; renderQueue(); } });
+
+    $('upload-button').addEventListener('click', async () => {
+      const pending = state.files.filter(item => item.status === 'pending');
+      if (!pending.length || state.uploading) return;
+      if (!credentialsReady()) { alert('Enter your xCALLY username and password.'); return; }
+      state.uploading = true;
+      $('upload-button').textContent = 'Uploading…';
+      $('upload-button').classList.add('loading');
+      $('upload-button').setAttribute('aria-busy', 'true');
+      pending.forEach(item => item.status = 'uploading'); renderQueue();
+      const form = new FormData(); form.append('market', selectedMarket()); pending.forEach(item => form.append('files', item.file, item.file.name));
+      if ($('username').value.trim() && $('password').value) { form.append('username', $('username').value.trim()); form.append('password', $('password').value); }
+      try {
+        const response = await fetch('/api/uploads', { method:'POST', body:form }); const data = await response.json();
+        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Upload request failed.');
+        pending.forEach((item, index) => { const result = data.results?.[index]; item.result = result || {status:'failed',message:'No result returned.'}; item.status = item.result.status; });
+      } catch (error) { pending.forEach(item => { item.status='failed'; item.result={status:'failed',message:error.message}; }); }
+      finally {
+        state.uploading=false;
+        $('upload-button').textContent = 'Upload files';
+        $('upload-button').classList.remove('loading');
+        $('upload-button').removeAttribute('aria-busy');
+        renderQueue();
+      }
+    });
+
+    async function loadHistory() {
+      $('history-content').innerHTML = '<div class="empty">Loading history…</div>';
+      try {
+        const market = $('history-filter').value; const response = await fetch(`/api/history${market ? `?market=${encodeURIComponent(market)}` : ''}`); const data = await response.json(); const rows = data.history || [];
+        const success = rows.filter(row => row.status === 'success').length;
+        $('stats').innerHTML = `<div class="stat"><div class="stat-label">Total uploads</div><div class="stat-value">${rows.length}</div></div><div class="stat"><div class="stat-label">Successful</div><div class="stat-value">${success}</div></div><div class="stat"><div class="stat-label">Failed</div><div class="stat-value">${rows.length-success}</div></div>`;
+        if (!rows.length) { $('history-content').innerHTML='<div class="empty">No upload history found.</div>'; return; }
+        $('history-content').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Market</th><th>File</th><th>Status</th><th>List</th><th>PID</th><th>Timestamp</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.market || 'Legacy')}</strong></td><td title="${escapeHtml(row.file_name)}">${escapeHtml(row.file_name)}</td><td><span class="badge ${escapeHtml(row.status)}">${escapeHtml(row.status)}</span></td><td>${escapeHtml(row.list_id || '—')}</td><td>${escapeHtml(row.pid || '—')}</td><td>${escapeHtml(row.timestamp || '—')}</td></tr>`).join('')}</tbody></table></div>`;
+      } catch { $('history-content').innerHTML='<div class="empty">Unable to load history.</div>'; }
+    }
+    $('history-filter').addEventListener('change', loadHistory);
+    $('clear-history').addEventListener('click', async () => { if (confirm('Clear all upload history?')) { await fetch('/api/history',{method:'DELETE'}); loadHistory(); } });
+    initialize();
+  </script>
+</body>
+</html>
