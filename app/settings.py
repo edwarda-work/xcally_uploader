@@ -28,6 +28,7 @@ class Settings:
     max_workers: int
     max_upload_bytes: int
     history_limit: int
+    import_wait_seconds: int = 60
 
     @classmethod
     def from_environment(cls, project_dir: Path) -> "Settings":
@@ -45,4 +46,5 @@ class Settings:
             max_workers=max(1, min(int(os.getenv("UPLOAD_MAX_WORKERS", "5")), 10)),
             max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(60 * 1024 * 1024))),
             history_limit=int(os.getenv("HISTORY_LIMIT", "500")),
+            import_wait_seconds=max(1, int(os.getenv("XCALLY_IMPORT_WAIT_SECONDS", "60"))),
         )
