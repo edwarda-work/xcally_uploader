@@ -101,13 +101,130 @@ class XcallyClient:
         self.session.auth = HTTPBasicAuth(username, password)
         self.session.headers.update({"Accept": "application/json"})
 
+    def close(self) -> None:
+        self.session.close()
+
+    def json_request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
+        response = self.request(method, endpoint, **kwargs)
+        if not response.ok:
+            if response.status_code in (401, 403):
+                raise XcallyError(f"xCALLY rejected access (HTTP {response.status_code}). Check credentials and campaign permissions.")
+            raise XcallyError(f"xCALLY request failed (HTTP {response.status_code}) for {endpoint}.")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise XcallyError("xCALLY returned an invalid JSON response.") from exc
+
+    @staticmethod
+    def rows(data: Any) -> list[dict]:
+        rows = data if isinstance(data, list) else data.get("rows") if isinstance(data, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise XcallyError("xCALLY returned an unexpected collection format.")
+        return rows
+
+    def collection(self, endpoint: str, **params: Any) -> list[dict]:
+        result: list[dict] = []
+        seen: set[int] = set()
+        offset = 0
+        for _ in range(1000):
+            response = self.request("GET", endpoint, params={**params, "limit": 100, "offset": offset, "sort": "id"})
+            if not response.ok:
+                raise XcallyError(f"Unable to read {endpoint} (HTTP {response.status_code}). Check xCALLY permissions.")
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise XcallyError("xCALLY returned invalid JSON.") from exc
+            rows = self.rows(data)
+            if not rows:
+                return result
+            for row in rows:
+                if type(row.get("id")) is not int or row["id"] in seen:
+                    raise XcallyError("xCALLY pagination returned invalid or repeated IDs.")
+                seen.add(row["id"])
+            result.extend(rows)
+            offset += len(rows)
+            count = data.get("count") if isinstance(data, dict) else None
+            if count is None:
+                count = response.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            if str(count).isdigit() and offset >= int(count):
+                return result
+            if count in (None, "") and len(rows) < 100:
+                return result
+        raise XcallyError("xCALLY returned too many pages.")
+
+    def agents(self) -> list[dict]:
+        return [{key: row.get(key) for key in ('id', 'name', 'fullname', 'role')}
+                for row in self.collection("/users", fields="id,name,fullname,role", role="agent") if row.get("role") == "agent"]
+
+    def campaigns(self) -> list[dict]:
+        return [{key: row.get(key) for key in ('id', 'name', 'type', 'dialMethod', 'TrunkId', 'dialTimezone')}
+                for row in self.collection("/voice/queues", fields="id,name,type,dialMethod,TrunkId,dialTimezone", type="outbound") if row.get("type") == "outbound"]
+
+    def queue(self, queue_id: int) -> dict:
+        data = self.json_request("GET", f"/voice/queues/{queue_id}")
+        if not isinstance(data, dict) or data.get("id") != queue_id:
+            raise XcallyError("xCALLY did not return the requested campaign.")
+        return data
+
+    def assign_list(self, queue_id: int, list_id: int) -> None:
+        self.json_request("POST", f"/voice/queues/{queue_id}/lists", json={"id": queue_id, "ids": [list_id]})
+
+    def detach_lists(self, queue_id: int, list_ids: list[int]) -> None:
+        # Angular $resource DELETE uses query parameters, as in the installed UI.
+        if list_ids:
+            response = self.request("DELETE", f"/voice/queues/{queue_id}/lists", params={"ids": list_ids})
+            if not response.ok:
+                raise XcallyError(f"Unable to detach campaign lists (HTTP {response.status_code}).")
+
+    def set_campaign_active(self, queue_id: int, active: bool) -> None:
+        self.json_request("PUT", f"/voice/queues/{queue_id}", json={"dialActive": active})
+        if self.queue(queue_id).get('dialActive') != active:
+            raise XcallyError('Campaign active status could not be verified.')
+
+    def verify_agent(self, queue_id: int, agent_id: int) -> None:
+        members = self.collection(f"/voice/queues/{queue_id}/users")
+        teams = self.collection(f"/voice/queues/{queue_id}/teams")
+        if {row['id'] for row in members} != {agent_id} or teams:
+            raise XcallyError('The campaign must already contain only its designated agent, with no shared teams. Check its assignments in xCALLY.')
+
+    def list_ids(self, queue_id: int) -> set[int]:
+        return {row['id'] for row in self.collection(f"/voice/queues/{queue_id}/lists")}
+
+    def wait_for_import(self, list_id: int, expected_count: int) -> None:
+        deadline = time.monotonic() + self.settings.import_wait_seconds
+        while True:
+            remaining = max(1, deadline - time.monotonic())
+            # The list association endpoint returns a bare array. The contacts
+            # collection is the paginated/countable endpoint used by Motion UI.
+            response = self.request('GET', '/cm/contacts',
+                                    params={'ListId': list_id, 'limit': 1, 'fields': 'id'},
+                                    timeout=min(self.settings.request_timeout, remaining))
+            if not response.ok:
+                raise XcallyError(f'Unable to verify imported contacts (HTTP {response.status_code}). Existing campaign lists were not changed.')
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid contact data. Existing campaign lists were not changed.') from exc
+            count = data.get('count') if isinstance(data, dict) else None
+            if count is None:
+                count = response.headers.get('Content-Range', '').rsplit('/', 1)[-1]
+            if isinstance(count, str) and count.isdigit():
+                count = int(count)
+            if type(count) is not int or count < 0:
+                raise XcallyError('Contact count could not be verified from xCALLY pagination metadata. Existing campaign lists were not changed.')
+            if count == expected_count:
+                return
+            if count > expected_count or time.monotonic() >= deadline:
+                raise XcallyError(f'Import verification found {count} of {expected_count} contacts. Existing campaign lists were not changed; inspect the new list in xCALLY.')
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+
     def request(self, method: str, endpoint: str, **kwargs: Any) -> requests.Response:
         endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         try:
             return self.session.request(
                 method=method.upper(),
                 url=f"{self.settings.base_url}{self.settings.api_prefix}{endpoint}",
-                timeout=self.settings.request_timeout,
+                timeout=kwargs.pop("timeout", self.settings.request_timeout),
                 verify=self.settings.verify_ssl,
                 **kwargs,
             )

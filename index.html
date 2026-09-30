@@ -38,7 +38,7 @@
     .prefix { color:var(--cherry); font-weight:800; font-size:13px; }
     .credentials-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
     .field span { display:block; margin-bottom:7px; color:var(--muted); font-size:12px; font-weight:700; }
-    .field input,.filter { width:100%; border:1px solid var(--line); border-radius:9px; background:#fff; padding:11px 12px; color:var(--black); outline:none; }
+    .field input,.field select,.filter { width:100%; border:1px solid var(--line); border-radius:9px; background:#fff; padding:11px 12px; color:var(--black); outline:none; }
     .field input:focus,.filter:focus { border-color:var(--cherry); box-shadow:0 0 0 2px rgba(214,8,107,.1); }
     .help { margin-top:10px; color:var(--muted); font-size:12px; }
     .drop-zone { padding:44px 24px; border:1.5px dashed #aeb8b5; border-radius:14px; background:#fff; text-align:center; cursor:pointer; transition:.15s ease; }
@@ -79,12 +79,26 @@
     th { color:var(--muted); background:var(--soft); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
     tr:last-child td { border-bottom:0; }
     .empty { padding:42px; text-align:center; color:var(--muted); border:1px solid var(--line); border-radius:12px; background:#fff; }
+    .notice { padding:14px 16px; border-radius:10px; background:#fff4d6; color:#694b00; font-size:13px; line-height:1.6; margin-bottom:18px; }
+    .batch-errors { margin:18px 0; padding:16px; border:1px solid #f2b8b3; border-radius:10px; background:#fff5f4; color:var(--danger); overflow-wrap:anywhere; }
+    .batch-error { padding-top:14px; margin-top:14px; border-top:1px solid #f2b8b3; }
+    .batch-error p { margin:6px 0; line-height:1.5; }
+    .campaign-results-table { table-layout:fixed; }
+    .campaign-results-table th,.campaign-results-table td { white-space:normal; overflow-wrap:anywhere; }
+    .notice details { margin-top:8px; overflow-wrap:anywhere; }
+    .preview-error { color:var(--danger); margin:12px 0; }
+    .split-fields { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .split-fields input[type="file"] { width:100%; }
+    .split-preview { margin-top:20px; }
+    .nav-inner { overflow-x:auto; }
+    .nav-button { white-space:nowrap; }
+    @media (max-width:700px) { .split-fields { grid-template-columns:1fr; } }
     @media (max-width:700px) { .market-grid,.credentials-grid,.stats { grid-template-columns:1fr; } .history-head { align-items:flex-start; flex-direction:column; } .header-inner,main,.nav-inner { padding-left:16px; padding-right:16px; } .file-row { grid-template-columns:minmax(0,1fr) auto; } .remove { display:none; } }
   </style>
 </head>
 <body>
   <header><div class="header-inner"><div class="brand"><span class="brand-mark">●</span> xCALLY Upload Automation</div><div id="server-status" class="status">Checking configuration</div></div></header>
-  <nav><div class="nav-inner"><button class="nav-button active" data-tab="upload">Upload</button><button class="nav-button" data-tab="history">History</button></div></nav>
+  <nav><div class="nav-inner"><button class="nav-button active" data-tab="upload">Upload</button><button class="nav-button" data-tab="split">Multi Campaigns</button><button class="nav-button" data-tab="history">History</button></div></nav>
   <main>
     <section id="upload" class="tab active">
       <h1>Upload contact lists</h1><p class="lead">Choose the market, add CSV files, and send them securely to xCALLY.</p>
@@ -107,6 +121,47 @@
       <input id="file-input" type="file" accept=".csv,text/csv" multiple>
       <div id="queue" class="queue"></div>
       <div class="actions"><button id="upload-button" class="button button-primary" disabled>Upload files</button><button id="clear-button" class="button button-secondary">Clear</button><span id="count" class="count"></span></div>
+    </section>
+    <section id="split" class="tab">
+      <h1>Bulk Compaigns</h1>
+      <p class="lead">Split one contact file into agent lists and replace the lists in their existing campaigns.</p>
+      <div class="notice">Existing campaigns are matched by agent username. Previous lists are detached and remain in Contacts Manager.</div>
+      <div class="card">
+        <p class="section-title">1. Choose your contact file</p>
+        <div class="split-fields">
+          <label class="field"><span>Market</span><select id="split-market"><option value="">Select a market</option></select></label>
+          <label class="field"><span>Contact CSV</span><input id="split-file" type="file" accept=".csv,text/csv" aria-describedby="split-file-help"></label>
+        </div>
+        <p id="split-file-help" class="help">Include a column such as AGENT_NAME with agent usernames or full names. Contacts are grouped by agent, regardless of row order.</p>
+      </div>
+      <div class="card">
+        <p class="section-title">2. Review the segments</p>
+        <div class="split-fields">
+          <label class="field"><span>Agent column</span><select id="split-column" disabled><option value="">Choose a CSV first</option></select></label>
+          <label class="field"><span>New list base name</span><input id="split-name" placeholder="e.g. Collections" maxlength="50"></label>
+        </div>
+        <p class="help">Names are trimmed and grouped exactly as written. Agent accounts will be matched before creation.</p>
+        <div id="split-error" class="preview-error" role="alert"></div>
+        <div id="split-preview" class="split-preview" aria-live="polite"><div class="empty">Choose a CSV to preview its agents and contact counts.</div></div>
+      </div>
+      <div class="card">
+        <p class="section-title">3. Queue campaigns</p>
+        <p class="help">Each agent’s new list replaces all contact lists currently linked to their existing campaign. Campaign names follow MARKET_AGENT_QUEUE_USERNAME, for example GH_AGENT_QUEUE_ZEINABE.</p>
+        <div class="credentials-grid">
+          <label class="field"><span>xCALLY username</span><input id="campaign-username" autocomplete="username" placeholder="Use server credentials or enter username"></label>
+          <label class="field"><span>xCALLY password</span><input id="campaign-password" type="password" autocomplete="current-password" placeholder="Enter password"></label>
+        </div>
+        <p class="help">Leave both blank to use server credentials or the credentials entered in the Upload tab.</p>
+        <button id="campaign-load" class="button button-secondary">Load agents &amp; campaigns</button>
+        <div id="campaign-error" class="preview-error" role="alert"></div>
+        <p class="help">Agent assignments and calling settings are retained. Active campaigns are briefly paused during the list swap and resumed after verification. If a swap fails, check its reported status before resuming.</p>
+        <div id="campaign-matches" class="split-preview"></div>
+        <div class="actions"><button id="campaign-create" class="button button-primary" disabled aria-describedby="split-creation-help">Upload &amp; replace campaign lists</button><button id="split-clear" class="button button-secondary">Clear preview</button></div>
+        <p id="split-creation-help" class="help" role="status">Match every agent to an existing campaign. New contact imports are verified before any previous lists are detached.</p>
+        <button id="campaign-new-upload" class="button button-secondary" hidden>Prepare another upload</button>
+        <div id="campaign-results" aria-live="polite"></div>
+        <button id="campaign-refresh" class="button button-secondary" hidden>Check batch status</button>
+      </div>
     </section>
     <section id="history" class="tab">
       <div class="history-head"><div><h1>Upload history</h1><p class="lead" style="margin:5px 0 0">Review results across all markets.</p></div><div class="history-actions"><select id="history-filter" class="filter" aria-label="Filter market"><option value="">All markets</option></select><button id="clear-history" class="button button-secondary">Clear history</button></div></div>
@@ -140,6 +195,8 @@
         if (!response.ok) throw new Error();
         const data = await response.json();
         state.configured = Boolean(data.ready); state.markets = data.markets || [];
+        state.maxUploadBytes = data.max_upload_bytes;
+        $('split-market').innerHTML += state.markets.map(m => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.name)}</option>`).join('');
         updateCredentialStatus();
         $('market-grid').innerHTML = state.markets.map(m => `<label class="market"><input type="radio" name="market" value="${escapeHtml(m.code)}"><span class="market-content"><span><span class="market-name">${escapeHtml(m.name)}</span><span class="market-code">${escapeHtml(m.code)}</span></span><span class="prefix">${escapeHtml(m.prefix)}_</span></span></label>`).join('');
         $('history-filter').innerHTML += state.markets.map(m => `<option value="${escapeHtml(m.code)}">${escapeHtml(m.name)}</option>`).join('');
@@ -216,12 +273,74 @@
         const success = rows.filter(row => row.status === 'success').length;
         $('stats').innerHTML = `<div class="stat"><div class="stat-label">Total uploads</div><div class="stat-value">${rows.length}</div></div><div class="stat"><div class="stat-label">Successful</div><div class="stat-value">${success}</div></div><div class="stat"><div class="stat-label">Failed</div><div class="stat-value">${rows.length-success}</div></div>`;
         if (!rows.length) { $('history-content').innerHTML='<div class="empty">No upload history found.</div>'; return; }
-        $('history-content').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Market</th><th>File</th><th>Status</th><th>List</th><th>PID</th><th>Timestamp</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.market || 'Legacy')}</strong></td><td title="${escapeHtml(row.file_name)}">${escapeHtml(row.file_name)}</td><td><span class="badge ${escapeHtml(row.status)}">${escapeHtml(row.status)}</span></td><td>${escapeHtml(row.list_id || '—')}</td><td>${escapeHtml(row.pid || '—')}</td><td>${escapeHtml(row.timestamp || '—')}</td></tr>`).join('')}</tbody></table></div>`;
+        $('history-content').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Market</th><th>File</th><th>Status</th><th>List</th><th>Campaign</th><th>Agent</th><th>PID</th><th>Timestamp</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.market || 'Legacy')}</strong></td><td title="${escapeHtml(row.file_name)}">${escapeHtml(row.file_name)}</td><td><span class="badge ${escapeHtml(row.status)}">${escapeHtml(row.status)}</span></td><td>${escapeHtml(row.list_id || '—')}</td><td>${escapeHtml(row.campaign_id || '—')}</td><td>${escapeHtml(row.agent_name || '—')}</td><td>${escapeHtml(row.pid || '—')}</td><td>${escapeHtml(row.timestamp || '—')}</td></tr>`).join('')}</tbody></table></div>`;
       } catch { $('history-content').innerHTML='<div class="empty">Unable to load history.</div>'; }
     }
     $('history-filter').addEventListener('change', loadHistory);
     $('clear-history').addEventListener('click', async () => { if (confirm('Clear all upload history?')) { await fetch('/api/history',{method:'DELETE'}); loadHistory(); } });
+    const splitState = { data: null, request: 0, controller: null };
+    function renderSegments() {
+      const data = splitState.data;
+      window.campaignUI?.previewChanged();
+      if (!data) return;
+      if (!data.agent_column) {
+        $('split-preview').innerHTML = `<div class="empty">${data.total} contacts found. Select the column containing agent names.</div>`;
+        return;
+      }
+      const market = state.markets.find(m => m.code === $('split-market').value);
+      const safe = value => value.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'agent';
+      const now = new Date();
+      const date = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
+      const base = safe($('split-name').value.trim() || 'Contacts');
+      const rows = data.segments.map((segment, index) => {
+        const name = market ? `${market.prefix}_${date}_${base.slice(0,40)}_${safe(segment.agent).slice(0,40)}`.slice(0,100) : 'Select a market';
+        return `<tr><td>${escapeHtml(segment.agent)}</td><td>${segment.count}</td><td>${escapeHtml(name)}</td><td>${escapeHtml(window.campaignUI?.targetForAgent(segment.agent) || 'Load and match agents below')}</td></tr>`;
+      }).join('');
+      $('split-preview').innerHTML = `<div class="stats"><div class="stat"><div class="stat-label">Contacts</div><div class="stat-value">${data.total}</div></div><div class="stat"><div class="stat-label">Agent segments</div><div class="stat-value">${data.segments.length}</div></div><div class="stat"><div class="stat-label">Unassigned contacts</div><div class="stat-value">${data.unassigned}</div></div></div>${data.unassigned ? '<div class="notice">Some contacts have no agent. Fill in their agent names before creating lists.</div>' : ''}${rows ? `<div class="table-wrap"><table><thead><tr><th>Agent in CSV</th><th>Contacts</th><th>New list</th><th>Existing campaign</th></tr></thead><tbody>${rows}</tbody></table></div><p class="help">Names use market, date, list name, and agent. A short numeric suffix is added only if the name already exists.</p>` : '<div class="empty">No assigned agents found in this column.</div>'}`;
+    }
+    async function previewSplit(resetColumn = false) {
+      const request = ++splitState.request;
+      splitState.controller?.abort();
+      const controller = new AbortController();
+      splitState.controller = controller;
+      splitState.data = null;
+      window.campaignUI?.previewStarted();
+      $('split-error').textContent = '';
+      if (resetColumn) $('split-column').innerHTML = '<option value="">Choose a CSV first</option>';
+      const file = $('split-file').files[0];
+      const column = resetColumn ? '' : $('split-column').value;
+      $('split-column').disabled = true;
+      if (!file) { $('split-preview').innerHTML = '<div class="empty">Choose a CSV to preview its agents and contact counts.</div>'; return; }
+      $('split-preview').innerHTML = '<div class="empty">Reading contacts…</div>';
+      try {
+        if (!file.name.toLowerCase().endsWith('.csv')) throw new Error('Only CSV files are accepted.');
+        if (state.maxUploadBytes && file.size > state.maxUploadBytes) throw new Error('File exceeds the configured upload size limit.');
+        const form = new FormData(); form.append('file', file);
+        if (column) form.append('agent_column', column);
+        const response = await fetch('/api/segments/preview', {method:'POST', body:form, signal:controller.signal});
+        const data = await response.json();
+        if (request !== splitState.request) return;
+        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Unable to preview this file.');
+        splitState.data = data;
+        $('split-column').innerHTML = '<option value="" disabled>Select an agent column</option>' + data.headers.map(h => `<option value="${escapeHtml(h)}">${escapeHtml(h)}</option>`).join('');
+        $('split-column').value = data.agent_column || '';
+        $('split-column').disabled = false;
+        renderSegments();
+      } catch (error) {
+        if (request !== splitState.request || error.name === 'AbortError') return;
+        $('split-error').textContent = error.message;
+        $('split-preview').innerHTML = '<div class="empty">Correct the CSV and choose it again to preview.</div>';
+      }
+    }
+    $('split-file').addEventListener('change', () => previewSplit(true));
+    $('split-column').addEventListener('change', () => previewSplit());
+    $('split-market').addEventListener('change', renderSegments);
+    $('split-name').addEventListener('input', renderSegments);
+    $('split-clear').addEventListener('click', () => {
+      $('split-file').value = ''; $('split-name').value = ''; previewSplit(true);
+    });
     initialize();
   </script>
+  <script src="/campaigns.js?v=20260915-2"></script>
 </body>
 </html>
