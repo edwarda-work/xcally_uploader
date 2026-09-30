@@ -2,6 +2,50 @@
 
 A market-aware automation service for validating CSV contact lists and uploading them to xCALLY. Market is local metadata only: it selects the list-name prefix and trusted custom-field schema. It is not sent to xCALLY.
 
+## Split by agent
+
+The **Split by agent** tab uploads one replacement list per agent to an existing
+outbound campaign named `MARKET_AGENT_QUEUE_USERNAME` (for example,
+`GH_AGENT_QUEUE_ZEINABE`). Load agents and campaigns, confirm the CSV names map to
+real xCALLY usernames, and click **Upload & replace campaign lists**.
+
+The workflow validates all rows and agent/campaign matches before writing to
+xCALLY. Each campaign must already contain only its designated agent and no shared
+teams. It uploads a fresh list and waits for its contact count to equal the CSV
+segment count before changing campaign associations. Verification uses the contacts
+collection filtered by `ListId`, accepting JSON counts or `Content-Range` totals.
+New list names use market, date, base name, and agent, without a batch UUID; a short
+numeric suffix is added only when a name already exists. An incomplete or unverifiable
+import leaves the campaign untouched. The default import verification window is
+60 seconds (`XCALLY_IMPORT_WAIT_SECONDS`).
+
+Active campaigns are temporarily paused. All existing contact-list associations
+are detached, then the new list is attached and verified. Detaching first avoids
+having old and new contacts together during xCALLY's duplicate checks. Existing
+campaign duplicate/retry rules still apply; this does not reset historical call
+outcomes. A successful swap restores the prior active status. Existing agents,
+blacklists, dispositions, and calling configuration are retained. No campaign is
+created, and no contact list or contact is deleted from Contacts Manager.
+
+A failed swap is not automatically retried or resumed. The result records the old
+list IDs, new list ID, campaign ID, failing step, and whether the campaign may be
+paused. Review associations in xCALLY before resuming. Association changes are not
+transactional, and pausing does not cancel calls already in progress.
+
+Batch status is stored in `campaign_batches.sqlite3`, without credentials or CSV
+rows. The browser remembers the latest batch ID for status recovery after refresh.
+Repeated submissions with the same ID do not rerun the workflow; simultaneous
+batches targeting the same campaign are rejected. Use one application process;
+restart recovery marks unfinished batches interrupted for operator review.
+Per-agent results are also added to upload history. Batch records are retained
+separately when upload history is cleared.
+
+API routes: `POST /api/segments/preview`, `POST /api/campaigns/options`,
+`POST /api/campaign-batches`, and `GET /api/campaign-batches/{id}`. Options and
+submission use multipart credentials or configured server credentials. Submission
+accepts `file`, `market`, `agent_column`, `assignments` (JSON mapping CSV names to
+agent IDs), `batch_id` (UUID), and optional `base_name`.
+
 ## Supported markets
 
 | Code | Market | List prefix | Schema |
