@@ -85,6 +85,13 @@
     .batch-error p { margin:6px 0; line-height:1.5; }
     .campaign-results-table { table-layout:fixed; }
     .campaign-results-table th,.campaign-results-table td { white-space:normal; overflow-wrap:anywhere; }
+    .monitor-controls { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
+    .monitor-controls .field { flex:1; min-width:220px; }
+    .monitor-row { cursor:pointer; }
+    .monitor-row:hover,.monitor-row:focus { background:#fff8fb; }
+    .monitor-row.selected { background:#fff0f7; }
+    .monitor-note { color:var(--muted); font-size:13px; line-height:1.5; }
+    .monitor-detail { margin-top:18px; }
     .notice details { margin-top:8px; overflow-wrap:anywhere; }
     .preview-error { color:var(--danger); margin:12px 0; }
     .split-fields { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
@@ -98,7 +105,7 @@
 </head>
 <body>
   <header><div class="header-inner"><div class="brand"><span class="brand-mark">●</span> xCALLY Upload Automation</div><div id="server-status" class="status">Checking configuration</div></div></header>
-  <nav><div class="nav-inner"><button class="nav-button active" data-tab="upload">Upload</button><button class="nav-button" data-tab="split">Multi Campaigns</button><button class="nav-button" data-tab="history">History</button></div></nav>
+  <nav><div class="nav-inner"><button class="nav-button active" data-tab="upload">Upload</button><button class="nav-button" data-tab="split">Multi Campaigns</button><button class="nav-button" data-tab="performance">Campaign Performance</button><button class="nav-button" data-tab="agents">Agent Performance</button><button class="nav-button" data-tab="history">History</button></div></nav>
   <main>
     <section id="upload" class="tab active">
       <h1>Upload contact lists</h1><p class="lead">Choose the market, add CSV files, and send them securely to xCALLY.</p>
@@ -163,6 +170,36 @@
         <button id="campaign-refresh" class="button button-secondary" hidden>Check batch status</button>
       </div>
     </section>
+    <section id="performance" class="tab">
+      <h1>Campaign performance</h1><p class="lead">Select an active outbound campaign to check its current state.</p>
+      <div class="card">
+        <div class="monitor-controls">
+          <label class="field"><span>xCALLY username</span><input id="performance-username" autocomplete="username" placeholder="Use server credentials or enter username"></label>
+          <label class="field"><span>xCALLY password</span><input id="performance-password" type="password" autocomplete="current-password" placeholder="Enter password"></label>
+          <button id="performance-refresh" class="button button-secondary">Load campaigns</button>
+        </div>
+        <p class="help">Leave credentials blank to use the server credentials or those entered in Upload.</p>
+        <div id="performance-error" class="preview-error" role="alert"></div>
+        <p id="performance-updated" class="monitor-note" aria-live="polite"></p>
+      </div>
+      <div class="card"><div class="monitor-controls"><label class="field"><span>Campaign</span><select id="performance-campaign"><option value="">Select a campaign</option></select></label><button id="performance-check" class="button button-primary" disabled>Check campaign</button></div></div>
+      <div id="performance-detail" class="monitor-detail" aria-live="polite"></div>
+    </section>
+    <section id="agents" class="tab">
+      <h1>Agent performance</h1><p class="lead">Check the current voice status of agents assigned to an active campaign.</p>
+      <div class="card">
+        <div class="monitor-controls">
+          <label class="field"><span>xCALLY username</span><input id="agents-username" autocomplete="username" placeholder="Use server credentials or enter username"></label>
+          <label class="field"><span>xCALLY password</span><input id="agents-password" type="password" autocomplete="current-password" placeholder="Enter password"></label>
+          <button id="agents-load" class="button button-secondary">Load campaigns</button>
+        </div>
+        <p class="help">Leave credentials blank to use the server credentials or those entered in Upload.</p>
+        <div id="agents-error" class="preview-error" role="alert"></div>
+        <p id="agents-updated" class="monitor-note" aria-live="polite"></p>
+      </div>
+      <div class="card"><div class="monitor-controls"><label class="field"><span>Campaign</span><select id="agents-campaign"><option value="">Select a campaign</option></select></label><button id="agents-check" class="button button-primary" disabled>Check agents</button></div></div>
+      <div id="agents-detail" class="monitor-detail" aria-live="polite"></div>
+    </section>
     <section id="history" class="tab">
       <div class="history-head"><div><h1>Upload history</h1><p class="lead" style="margin:5px 0 0">Review results across all markets.</p></div><div class="history-actions"><select id="history-filter" class="filter" aria-label="Filter market"><option value="">All markets</option></select><button id="clear-history" class="button button-secondary">Clear history</button></div></div>
       <div id="stats" class="stats"></div><div id="history-content"></div>
@@ -211,6 +248,8 @@
       document.querySelectorAll('.nav-button,.tab').forEach(node => node.classList.remove('active'));
       button.classList.add('active'); $(button.dataset.tab).classList.add('active');
       if (button.dataset.tab === 'history') loadHistory();
+      if (button.dataset.tab === 'performance') window.performanceUI?.opened();
+      if (button.dataset.tab === 'agents') window.agentUI?.opened();
     }));
 
     const dropZone = $('drop-zone'), fileInput = $('file-input');
@@ -342,5 +381,7 @@
     initialize();
   </script>
   <script src="/campaigns.js?v=20260915-2"></script>
+  <script src="/performance.js?v=20261001-9"></script>
+  <script src="/agents.js?v=20261001-2"></script>
 </body>
 </html>
