@@ -55,6 +55,16 @@ async def campaign_script() -> FileResponse:
     return FileResponse(PROJECT_DIR / "campaigns.js", media_type="text/javascript")
 
 
+@app.get('/performance.js', include_in_schema=False)
+async def performance_script() -> FileResponse:
+    return FileResponse(PROJECT_DIR / 'performance.js', media_type='text/javascript')
+
+
+@app.get('/agents.js', include_in_schema=False)
+async def agents_script() -> FileResponse:
+    return FileResponse(PROJECT_DIR / 'agents.js', media_type='text/javascript')
+
+
 @app.get("/api/status")
 async def status() -> dict:
     return {
@@ -93,6 +103,61 @@ async def campaign_options(username: Optional[str] = Form(None), password: Optio
 
     try:
         return await asyncio.get_running_loop().run_in_executor(executor, fetch_options)
+    except XcallyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post('/api/performance/campaigns')
+async def performance_campaigns(username: Optional[str] = Form(None), password: Optional[str] = Form(None)) -> dict:
+    credentials = campaign_credentials(username, password)
+
+    def fetch():
+        client = XcallyClient(settings, *credentials)
+        try:
+            return {'campaigns': sorted(client.campaigns(active_only=True), key=lambda row: row['name'].casefold())}
+        finally:
+            client.close()
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(executor, fetch)
+    except XcallyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post('/api/performance/campaigns/{campaign_id}')
+async def performance_campaign(campaign_id: int, username: Optional[str] = Form(None), password: Optional[str] = Form(None)) -> dict:
+    if campaign_id <= 0:
+        raise HTTPException(status_code=422, detail='Invalid campaign ID.')
+    credentials = campaign_credentials(username, password)
+
+    def fetch():
+        client = XcallyClient(settings, *credentials)
+        try:
+            return client.campaign_monitor_snapshot(campaign_id)
+        finally:
+            client.close()
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(executor, fetch)
+    except XcallyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post('/api/performance/campaigns/{campaign_id}/agents')
+async def performance_campaign_agents(campaign_id: int, username: Optional[str] = Form(None), password: Optional[str] = Form(None)) -> dict:
+    if campaign_id <= 0:
+        raise HTTPException(status_code=422, detail='Invalid campaign ID.')
+    credentials = campaign_credentials(username, password)
+
+    def fetch():
+        client = XcallyClient(settings, *credentials)
+        try:
+            return client.campaign_agent_status(campaign_id)
+        finally:
+            client.close()
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(executor, fetch)
     except XcallyError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
