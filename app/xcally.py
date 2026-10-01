@@ -156,9 +156,14 @@ class XcallyClient:
         return [{key: row.get(key) for key in ('id', 'name', 'fullname', 'role')}
                 for row in self.collection("/users", fields="id,name,fullname,role", role="agent") if row.get("role") == "agent"]
 
-    def campaigns(self) -> list[dict]:
-        return [{key: row.get(key) for key in ('id', 'name', 'type', 'dialMethod', 'TrunkId', 'dialTimezone')}
-                for row in self.collection("/voice/queues", fields="id,name,type,dialMethod,TrunkId,dialTimezone", type="outbound") if row.get("type") == "outbound"]
+    def campaigns(self, active_only: bool = False) -> list[dict]:
+        params = {'fields': 'id,name,type,dialMethod,TrunkId,dialTimezone,dialActive', 'type': 'outbound'}
+        if active_only:
+            params['dialActive'] = True
+        rows = self.collection('/voice/queues', **params)
+        return [{key: row.get(key) for key in ('id', 'name', 'type', 'dialMethod', 'TrunkId', 'dialTimezone', 'dialActive')}
+                for row in rows if row.get('type') == 'outbound' and
+                (not active_only or row.get('dialActive') in (True, 1))]
 
     def queue(self, queue_id: int) -> dict:
         data = self.json_request("GET", f"/voice/queues/{queue_id}")
@@ -189,6 +194,117 @@ class XcallyClient:
 
     def list_ids(self, queue_id: int) -> set[int]:
         return {row['id'] for row in self.collection(f"/voice/queues/{queue_id}/lists")}
+
+    def campaign_monitor_snapshot(self, queue_id: int) -> dict:
+        """Read only campaign configuration available through verified API routes."""
+        queue = self.queue(queue_id)
+        if queue.get('type') != 'outbound':
+            raise XcallyError('The selected campaign is not outbound.')
+        users = self.collection(f'/voice/queues/{queue_id}/users')
+        lists = self.collection(f'/voice/queues/{queue_id}/lists')
+        snapshot = {
+            'id': queue_id,
+            'name': queue.get('name'),
+            'active': bool(queue['dialActive']) if queue.get('dialActive') in (True, False, 0, 1) else None,
+            'agents': [{'id': row['id'], 'name': row.get('fullname') or row.get('name') or str(row['id'])} for row in users],
+            'list_count': len(lists),
+        }
+        snapshot['agents'], error = self.assigned_agent_presence(users)
+        if error:
+            snapshot['agents_error'] = error
+        known_online = all(agent['online'] is not None for agent in snapshot['agents'])
+        known_voice = known_online and all(agent['online'] is False or
+                                            agent['voice_status'] in {'idle', 'talking', 'ringing', 'pause', 'unavailable'}
+                                            for agent in snapshot['agents'])
+        snapshot['realtime'] = {
+            'logged_in': sum(agent['online'] is True for agent in snapshot['agents']) if known_online else None,
+            'available': sum(agent['online'] is True and agent['voice_status'] == 'idle' for agent in snapshot['agents']) if known_voice else None,
+            'talking': sum(agent['online'] is True and agent['voice_status'] == 'talking' for agent in snapshot['agents']) if known_voice else None,
+            'ringing': sum(agent['online'] is True and agent['voice_status'] == 'ringing' for agent in snapshot['agents']) if known_voice else None,
+        }
+        try:
+            snapshot['recent_calls'] = self.campaign_recent_calls(queue_id)
+        except XcallyError:
+            snapshot['calls_error'] = 'xCALLY call history is unavailable.'
+        return snapshot
+
+    def campaign_agent_status(self, queue_id: int) -> dict:
+        queue = self.queue(queue_id)
+        if queue.get('type') != 'outbound':
+            raise XcallyError('The selected campaign is not outbound.')
+        assigned = self.collection(f'/voice/queues/{queue_id}/users')
+        agents, error = self.assigned_agent_presence(assigned)
+        result = {'id': queue_id, 'name': queue.get('name'), 'agents': agents}
+        if error:
+            result['error'] = error
+        return result
+
+    def assigned_agent_presence(self, assigned: list[dict]) -> tuple[list[dict], str | None]:
+        agents = [{'id': row['id'], 'name': row.get('fullname') or row.get('name') or str(row['id']),
+                   'online': None, 'voice_status': None} for row in assigned]
+        if not agents:
+            return agents, None
+        error = None
+        try:
+            realtime = {row['id']: row for row in self.realtime_agents()}
+            matched = 0
+            for agent in agents:
+                row = realtime.get(agent['id'])
+                if row is not None:
+                    matched += 1
+                    agent['online'] = row.get('online') if type(row.get('online')) is bool else None
+                    agent['voice_status'] = row.get('voiceStatus')
+            if agents and matched == 0:
+                error = 'None of this campaign’s assigned agents appeared in xCALLY realtime agents.'
+            elif matched < len(agents):
+                error = f'Only {matched} of {len(agents)} assigned agents appeared in xCALLY realtime agents.'
+        except XcallyError as exc:
+            error = str(exc)
+        return agents, error
+
+    def realtime_agents(self) -> list[dict]:
+        response = self.request('GET', '/realtime/agents', params={
+            'channel': 'voice', 'globalStatusFilter': 'null', 'nolimit': 'true',
+            'pauseTypeFilter': 'null', 'sort': 'fullname',
+        })
+        if not response.ok:
+            raise XcallyError(f'Unable to read /realtime/agents (HTTP {response.status_code}).')
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise XcallyError('xCALLY returned invalid realtime agent data.') from exc
+        rows = self.rows(data)
+        count = data.get('count') if isinstance(data, dict) else None
+        if type(count) is int and len(rows) < count:
+            raise XcallyError(f'xCALLY returned only {len(rows)} of {count} realtime agents.')
+        return rows
+
+    def campaign_recent_calls(self, queue_id: int) -> list[dict]:
+        """Read a bounded, newest-first page of Hopper History for one queue."""
+        response = self.request('GET', f'/voice/queues/{queue_id}/hopper_histories', params={
+            'VoiceQueueId': queue_id,
+            'fields': 'VoiceQueueId,statedesc,starttime,endtime',
+            'limit': 10, 'offset': 0, 'page': 1, 'sort': '-id',
+        })
+        if not response.ok:
+            raise XcallyError(f'Unable to read campaign call history (HTTP {response.status_code}).')
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise XcallyError('xCALLY returned invalid campaign call history.') from exc
+        rows = self.rows(data)
+        if len(rows) > 10:
+            raise XcallyError('xCALLY returned too many call history rows.')
+        result = []
+        for row in rows:
+            if row.get('VoiceQueueId') != queue_id:
+                raise XcallyError('xCALLY returned call history for a different campaign.')
+            result.append({
+                'status': row.get('statedesc'),
+                'started_at': row.get('starttime'),
+                'ended_at': row.get('endtime'),
+            })
+        return result
 
     def wait_for_import(self, list_id: int, expected_count: int) -> None:
         deadline = time.monotonic() + self.settings.import_wait_seconds
