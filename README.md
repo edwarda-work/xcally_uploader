@@ -46,6 +46,36 @@ submission use multipart credentials or configured server credentials. Submissio
 accepts `file`, `market`, `agent_column`, `assignments` (JSON mapping CSV names to
 agent IDs), `batch_id` (UUID), and optional `base_name`.
 
+## Campaign performance
+
+The Campaign Performance tab loads only active outbound campaign names once when opened.
+After an operator selects a campaign and clicks **Check campaign**, it reads
+that campaign's active state, assigned users, linked contact-list count, and
+current agent data. Realtime agents are matched to the selected campaign's
+assigned agent IDs. Available, logged-in, talking, and ringing counts are
+calculated from `/api/realtime/agents` with the voice-channel filter. The
+campaign page no longer requests realtime queue data. If assigned-agent status
+is incomplete, affected counts remain unavailable instead of showing zero.
+**Load campaigns** refreshes the names; **Check campaign** becomes **Refresh
+campaign** after the first read and updates only the selected campaign. Its backend
+uses `POST /api/performance/campaigns` and
+`POST /api/performance/campaigns/{id}` with the same credential handling as the
+campaign options route. These calls are read only.
+
+The selected campaign's latest ten Hopper History entries show only status,
+start time, and end time. The app requests `VoiceQueueId` in the response and
+rejects rows for a different campaign. Hopper counts remain unavailable until
+their reporting request is verified. Agent voice states are current activity,
+not a historical call rate; the tab does not treat a missing measurement as zero.
+
+The Agent Performance tab separately reads assigned agents and their current
+voice status for one active campaign. It uses
+`POST /api/performance/campaigns/{id}/agents` only when an operator checks or
+refreshes that campaign. The status filter works on the loaded agents without
+another xCALLY request. Campaign Performance links to this tab; the campaign
+snapshot does not fetch agent presence. Agent call rates and rankings are not
+shown until per-agent call attribution and a time range are verified.
+
 ## Supported markets
 
 | Code | Market | List prefix | Schema |

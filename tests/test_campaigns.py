@@ -169,6 +169,77 @@ class CampaignTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(XcallyError, 'designated agent'):
             self.client.verify_agent(20, 4)
 
+    def test_active_campaign_options_filter_upstream_and_locally(self):
+        self.client.collection = MagicMock(return_value=[
+            {'id': 1, 'name': 'Active', 'type': 'outbound', 'dialActive': True},
+            {'id': 2, 'name': 'Paused', 'type': 'outbound', 'dialActive': False},
+        ])
+        self.assertEqual([row['id'] for row in self.client.campaigns(active_only=True)], [1])
+        self.assertEqual(self.client.collection.call_args.kwargs['dialActive'], True)
+
+    def test_monitor_and_agent_page_match_realtime_by_id(self):
+        self.client.queue = MagicMock(return_value={'id': 20, 'name': 'Campaign', 'type': 'outbound', 'dialActive': True})
+        data = {
+            '/voice/queues/20/users': [{'id': 4, 'name': 'Agent'}, {'id': 5, 'name': 'Second'}, {'id': 6, 'name': 'Third'}],
+            '/voice/queues/20/lists': [{'id': 9}],
+            '/realtime/agents': [
+                {'id': 3, 'online': True, 'voiceStatus': 'idle'},
+                {'id': 4, 'online': False, 'voiceStatus': 'unknown'},
+                {'id': 5, 'online': True, 'voiceStatus': 'idle'},
+                {'id': 6, 'online': True, 'voiceStatus': 'talking'},
+            ],
+        }
+        self.client.collection = MagicMock(side_effect=lambda endpoint: data[endpoint])
+        self.client.realtime_agents = MagicMock(return_value=data['/realtime/agents'])
+        self.client.campaign_recent_calls = MagicMock(return_value=[{'status': 'Answer', 'started_at': '2026-10-01T10:04:17Z', 'ended_at': '2026-10-01T10:05:11Z'}])
+        result = self.client.campaign_monitor_snapshot(20)
+        self.assertEqual(result['realtime'], {'logged_in': 2, 'available': 1, 'talking': 1, 'ringing': 0})
+        self.assertEqual(result['recent_calls'][0]['status'], 'Answer')
+        agent_result = self.client.campaign_agent_status(20)
+        self.assertEqual(agent_result['agents'][0]['online'], False)
+        self.assertEqual(agent_result['agents'][0]['voice_status'], 'unknown')
+
+    def test_missing_agent_presence_does_not_become_zero(self):
+        self.client.queue = MagicMock(return_value={'id': 20, 'name': 'Campaign', 'type': 'outbound', 'dialActive': True})
+        self.client.collection = MagicMock(side_effect=[[{'id': 4, 'name': 'Agent'}], [{'id': 9}]])
+        self.client.realtime_agents = MagicMock(return_value=[])
+        self.client.campaign_recent_calls = MagicMock(return_value=[])
+        result = self.client.campaign_monitor_snapshot(20)
+        self.assertIsNone(result['realtime']['available'])
+        self.assertIsNone(result['realtime']['logged_in'])
+        self.assertIn('None of this campaign', result['agents_error'])
+
+    def test_realtime_routes_use_api_prefix(self):
+        self.client.session.request = MagicMock()
+        self.client.request('GET', '/realtime/agents')
+        self.assertEqual(self.client.session.request.call_args.kwargs['url'],
+                         'https://example.invalid/api/realtime/agents')
+
+    def test_realtime_agents_uses_confirmed_voice_request(self):
+        response = MagicMock()
+        response.ok = True
+        response.json.return_value = {'count': 1, 'rows': [{'id': 4, 'online': True, 'voiceStatus': 'idle'}]}
+        self.client.request = MagicMock(return_value=response)
+        self.assertEqual(self.client.realtime_agents()[0]['id'], 4)
+        self.assertEqual(self.client.request.call_args.args, ('GET', '/realtime/agents'))
+        self.assertEqual(self.client.request.call_args.kwargs['params']['channel'], 'voice')
+        self.assertEqual(self.client.request.call_args.kwargs['params']['nolimit'], 'true')
+
+    def test_recent_calls_are_bounded_and_campaign_scoped(self):
+        response = MagicMock()
+        response.ok = True
+        response.json.return_value = {'count': 471206, 'rows': [
+            {'VoiceQueueId': 20, 'statedesc': 'NoAnswer', 'starttime': '2026-10-01T10:04:58Z', 'endtime': '2026-10-01T10:05:28Z'}]}
+        self.client.request = MagicMock(return_value=response)
+        calls = self.client.campaign_recent_calls(20)
+        self.assertEqual(calls, [{'status': 'NoAnswer', 'started_at': '2026-10-01T10:04:58Z', 'ended_at': '2026-10-01T10:05:28Z'}])
+        self.assertEqual(self.client.request.call_args.args, ('GET', '/voice/queues/20/hopper_histories'))
+        self.assertEqual(self.client.request.call_args.kwargs['params']['VoiceQueueId'], 20)
+        self.assertEqual(self.client.request.call_args.kwargs['params']['limit'], 10)
+        response.json.return_value['rows'][0]['VoiceQueueId'] = 21
+        with self.assertRaisesRegex(XcallyError, 'different campaign'):
+            self.client.campaign_recent_calls(20)
+
     def test_import_count_verification(self):
         def response(data, headers=None):
             value = MagicMock()
