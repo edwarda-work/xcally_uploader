@@ -2,6 +2,9 @@
 .venv/
 __pycache__/
 *.pyc
+.venv-build/
+build/
+dist/
 temp_uploads/
 upload_history.json
 .env.example

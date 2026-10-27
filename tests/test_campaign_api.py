@@ -27,14 +27,19 @@ async def request(method, path, data=None, file=None):
              'query_string': b'', 'root_path': '', 'headers': [(k.lower().encode(), v.encode()) for k, v in prepared.headers.items()],
              'server': ('test', 80), 'client': ('test', 1)}
     messages = []
+    received = False
     async def receive():
+        nonlocal received
+        if received:
+            await asyncio.Event().wait()
+        received = True
         return {'type': 'http.request', 'body': body, 'more_body': False}
     async def send(message):
         messages.append(message)
     await main.app(scope, receive, send)
     status = next(m['status'] for m in messages if m['type'] == 'http.response.start')
     result = b''.join(m.get('body', b'') for m in messages if m['type'] == 'http.response.body')
-    return status, json.loads(result)
+    return status, json.loads(result.splitlines()[-1])
 
 
 class CampaignApiTests(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +63,43 @@ class CampaignApiTests(unittest.IsolatedAsyncioTestCase):
         for p in reversed(self.patches):
             p.stop()
         self.temp.cleanup()
+
+    async def test_campaign_controls_report_partial_failures_and_release_locks(self):
+        with patch.object(main, 'XcallyClient') as factory:
+            client = factory.return_value
+            client.queue.side_effect = lambda id: {'id': id, 'type': 'outbound' if id != 3 else 'inbound', 'dialActive': False}
+            client.set_campaign_active.side_effect = [main.XcallyError('Verification failed'), None]
+            status, result = await request('POST', '/api/campaigns/active', {
+                **self.data, 'campaign_ids': '[1,2,3]', 'active': 'true'})
+            self.assertEqual(status, 200)
+            self.assertEqual([r['ok'] for r in result['results']], [False, True, False])
+            self.assertEqual(client.set_campaign_active.call_count, 2)
+            client.close.assert_called_once()
+            self.repo.lock_campaigns('after', [1, 2, 3])
+            self.repo.unlock_campaigns('after')
+
+    async def test_campaign_controls_reject_invalid_ids_and_locked_campaigns(self):
+        with patch.object(main, 'XcallyClient') as factory:
+            for ids in ('[]', '[1,1]', '[true]', '[0]', '{}', 'invalid'):
+                status, _ = await request('POST', '/api/campaigns/active', {
+                    **self.data, 'campaign_ids': ids, 'active': 'false'})
+                self.assertEqual(status, 422)
+            self.repo.lock_campaigns('upload', [2])
+            status, _ = await request('POST', '/api/campaigns/active', {
+                **self.data, 'campaign_ids': '[1,2]', 'active': 'false'})
+            self.assertEqual(status, 409)
+            factory.assert_not_called()
+            self.repo.lock_campaigns('other', [1])
+            self.repo.unlock_campaigns('other')
+
+    async def test_campaign_controls_skip_already_correct_state(self):
+        with patch.object(main, 'XcallyClient') as factory:
+            factory.return_value.queue.return_value = {'id': 1, 'type': 'outbound', 'dialActive': False}
+            status, result = await request('POST', '/api/campaigns/active', {
+                **self.data, 'campaign_ids': '[1]', 'active': 'false'})
+            self.assertEqual(status, 200)
+            self.assertTrue(result['results'][0]['ok'])
+            factory.return_value.set_campaign_active.assert_not_called()
 
     async def test_submission_is_idempotent_and_pollable(self):
         status, result = await request('POST', '/api/campaign-batches', self.data, self.csv)
@@ -100,6 +142,11 @@ class CampaignApiTests(unittest.IsolatedAsyncioTestCase):
         client.campaigns.return_value = [{'id': 7, 'name': 'Z campaign'}, {'id': 3, 'name': 'A campaign'}]
         client.campaign_monitor_snapshot.return_value = {'id': 3, 'name': 'A campaign', 'active': True, 'agents': [], 'list_count': 1}
         client.campaign_agent_status.return_value = {'id': 3, 'name': 'A campaign', 'agents': [{'id': 4, 'name': 'Agent', 'online': True, 'voice_status': 'idle'}]}
+        client.campaign_hourly_answered.return_value = {'period_start': '2026-10-02T07:00:00+00:00', 'period_end': '2026-10-02T19:00:00+00:00', 'as_of': '2026-10-02T10:30:00+00:00', 'timezone': 'Africa/Accra', 'hours': [], 'totals': {4: 3}}
+        client.iter_campaign_hourly_answered.return_value = iter([
+            {'processed': 0, 'complete': False}, {'processed': 250, 'complete': False},
+            {'processed': 250, 'complete': True},
+        ])
         with patch.object(main, 'XcallyClient', return_value=client):
             status, data = await request('POST', '/api/performance/campaigns', {'username': 'operator', 'password': 'secret'})
             self.assertEqual(status, 200)
@@ -113,7 +160,15 @@ class CampaignApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 200)
             self.assertEqual(data['agents'][0]['voice_status'], 'idle')
             client.campaign_agent_status.assert_called_once_with(3)
+            status, data = await request('POST', '/api/performance/campaigns/3/hourly-calls', {'username': 'operator', 'password': 'secret'})
+            self.assertEqual(status, 200)
+            self.assertEqual(data['totals']['4'], 3)
+            client.campaign_hourly_answered.assert_called_once_with(3)
+            status, data = await request('POST', '/api/performance/campaigns/3/hourly-calls/stream', {'username': 'operator', 'password': 'secret'})
+            self.assertEqual(status, 200)
+            self.assertEqual(data['complete'], True)
+            client.iter_campaign_hourly_answered.assert_called_once_with(3)
             status, _ = await request('POST', '/api/performance/campaigns/0', {'username': 'operator', 'password': 'secret'})
             self.assertEqual(status, 422)
             self.assertEqual(client.campaign_monitor_snapshot.call_count, 1)
-        self.assertEqual(client.close.call_count, 3)
+        self.assertEqual(client.close.call_count, 5)

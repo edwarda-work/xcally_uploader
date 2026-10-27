@@ -91,6 +91,7 @@
     .monitor-row:hover,.monitor-row:focus { background:#fff8fb; }
     .monitor-row.selected { background:#fff0f7; }
     .monitor-note { color:var(--muted); font-size:13px; line-height:1.5; }
+    .agent-pages { display:flex; align-items:center; justify-content:flex-end; gap:12px; margin-top:12px; font-size:13px; }
     .monitor-detail { margin-top:18px; }
     .notice details { margin-top:8px; overflow-wrap:anywhere; }
     .preview-error { color:var(--danger); margin:12px 0; }
@@ -130,7 +131,7 @@
       <div class="actions"><button id="upload-button" class="button button-primary" disabled>Upload files</button><button id="clear-button" class="button button-secondary">Clear</button><span id="count" class="count"></span></div>
     </section>
     <section id="split" class="tab">
-      <h1>Bulk Compaigns</h1>
+      <h1>Bulk Campaigns</h1>
       <p class="lead">Split one contact file into agent lists and replace the lists in their existing campaigns.</p>
       <div class="notice">Existing campaigns are matched by agent username. Previous lists are detached and remain in Contacts Manager.</div>
       <div class="card">
@@ -169,6 +170,18 @@
         <div id="campaign-results" aria-live="polite"></div>
         <button id="campaign-refresh" class="button button-secondary" hidden>Check batch status</button>
       </div>
+      <div class="card">
+        <p class="section-title">4. Turn campaigns ON or OFF</p>
+        <p class="help">Search by campaign name, or show campaigns matched to agents in your current CSV and selected market. Confirm agent assignments above first. ON enables dialing; OFF pauses dialing. Calls in progress may continue.</p>
+        <div class="split-fields">
+          <label class="field"><span>Find campaigns</span><select id="control-scope"><option value="search">Search campaign names</option><option value="agents">Agents in current CSV</option></select></label>
+          <label class="field"><span>Campaign name</span><input id="control-search" type="search" placeholder="Type part of a campaign name" autocomplete="off"></label>
+        </div>
+        <div class="actions"><button id="control-load" class="button button-secondary">Load campaign status</button><button id="control-on" class="button button-primary" disabled>Turn selected ON</button><button id="control-off" class="button button-secondary" disabled>Turn selected OFF</button></div>
+        <p id="control-message" class="help" role="status" aria-live="polite">Load campaigns to check their current status.</p>
+        <p id="control-count" class="help" role="status"></p>
+        <div id="control-campaigns" class="table-wrap"></div>
+      </div>
     </section>
     <section id="performance" class="tab">
       <h1>Campaign performance</h1><p class="lead">Select an active outbound campaign to check its current state.</p>
@@ -186,7 +199,7 @@
       <div id="performance-detail" class="monitor-detail" aria-live="polite"></div>
     </section>
     <section id="agents" class="tab">
-      <h1>Agent performance</h1><p class="lead">Check the current voice status of agents assigned to an active campaign.</p>
+      <h1>Agent performance</h1><p class="lead">Check assigned agents’ current voice status and answered calls by hour today.</p>
       <div class="card">
         <div class="monitor-controls">
           <label class="field"><span>xCALLY username</span><input id="agents-username" autocomplete="username" placeholder="Use server credentials or enter username"></label>
@@ -197,7 +210,7 @@
         <div id="agents-error" class="preview-error" role="alert"></div>
         <p id="agents-updated" class="monitor-note" aria-live="polite"></p>
       </div>
-      <div class="card"><div class="monitor-controls"><label class="field"><span>Campaign</span><select id="agents-campaign"><option value="">Select a campaign</option></select></label><button id="agents-check" class="button button-primary" disabled>Check agents</button></div></div>
+      <div class="card"><div class="monitor-controls"><label class="field"><span>Campaign</span><select id="agents-campaign"><option value="">Select a campaign</option></select></label><label class="field"><span>Search agents</span><input id="agents-search" type="search" placeholder="Name or agent ID" autocomplete="off" disabled></label><button id="agents-check" class="button button-primary" disabled>Check agents</button></div></div>
       <div id="agents-detail" class="monitor-detail" aria-live="polite"></div>
     </section>
     <section id="history" class="tab">
@@ -380,8 +393,9 @@
     });
     initialize();
   </script>
-  <script src="/campaigns.js?v=20260915-2"></script>
-  <script src="/performance.js?v=20261001-9"></script>
-  <script src="/agents.js?v=20261001-2"></script>
+  <script src="/campaigns.js?v=20261019-2"></script>
+  <script src="/campaign-controls.js?v=20261019-2"></script>
+  <script src="/performance.js?v=20261016-1"></script>
+  <script src="/agents.js?v=20261007-1"></script>
 </body>
 </html>
