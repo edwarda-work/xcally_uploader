@@ -15,23 +15,24 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.domain import MARKETS, FileResult, get_market
 from app.history import JsonHistoryRepository
 from app.service import process_file
 from app.segmentation import preview_segments
 from app.settings import Settings
+from app.paths import PROJECT_DIR, data_directory
 from app.batches import BatchRepository
 from app.campaigns import run_batch
 from app.xcally import XcallyClient, XcallyError
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
-settings = Settings.from_environment(PROJECT_DIR)
-history_repository = JsonHistoryRepository(PROJECT_DIR / "upload_history.json", settings.history_limit)
+DATA_DIR = data_directory()
+settings = Settings.from_environment(DATA_DIR)
+history_repository = JsonHistoryRepository(DATA_DIR / "upload_history.json", settings.history_limit)
 executor = ThreadPoolExecutor(max_workers=settings.max_workers, thread_name_prefix="xcally-upload")
-batch_repository = BatchRepository(PROJECT_DIR / "campaign_batches.sqlite3")
+batch_repository = BatchRepository(DATA_DIR / "campaign_batches.sqlite3")
 batch_slots = threading.BoundedSemaphore(settings.max_workers)
 
 
@@ -124,6 +125,57 @@ async def performance_campaigns(username: Optional[str] = Form(None), password: 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get('/campaign-controls.js', include_in_schema=False)
+async def campaign_controls_script() -> FileResponse:
+    return FileResponse(PROJECT_DIR / 'campaign-controls.js', media_type='text/javascript')
+
+
+@app.post('/api/campaigns/active')
+async def change_campaign_active(
+    campaign_ids: str = Form(...), active: bool = Form(...),
+    username: Optional[str] = Form(None), password: Optional[str] = Form(None),
+) -> dict:
+    credentials = campaign_credentials(username, password)
+    try:
+        ids = json.loads(campaign_ids)
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= 100
+                or any(type(value) is not int or value <= 0 for value in ids)
+                or len(set(ids)) != len(ids)):
+            raise ValueError('Choose between 1 and 100 distinct campaign IDs.')
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def change():
+        operation_id = str(uuid.uuid4())
+        try:
+            batch_repository.lock_campaigns(operation_id, ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail='A selected campaign is being updated. Wait for it to finish.') from exc
+        client = None
+        results = []
+        try:
+            client = XcallyClient(settings, *credentials)
+            for campaign_id in ids:
+                try:
+                    queue = client.queue(campaign_id)
+                    if queue.get('type') != 'outbound':
+                        raise XcallyError('Only outbound campaigns can be controlled here.')
+                    if queue.get('dialActive') != active:
+                        client.set_campaign_active(campaign_id, active)
+                    results.append({'id': campaign_id, 'active': active, 'ok': True})
+                except XcallyError as exc:
+                    results.append({'id': campaign_id, 'active': None, 'ok': False, 'error': str(exc)})
+            return {'results': results}
+        finally:
+            try:
+                if client is not None:
+                    client.close()
+            finally:
+                batch_repository.unlock_campaigns(operation_id)
+
+    return await asyncio.get_running_loop().run_in_executor(executor, change)
+
+
 @app.post('/api/performance/campaigns/{campaign_id}')
 async def performance_campaign(campaign_id: int, username: Optional[str] = Form(None), password: Optional[str] = Form(None)) -> dict:
     if campaign_id <= 0:
@@ -160,6 +212,44 @@ async def performance_campaign_agents(campaign_id: int, username: Optional[str] 
         return await asyncio.get_running_loop().run_in_executor(executor, fetch)
     except XcallyError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post('/api/performance/campaigns/{campaign_id}/hourly-calls')
+async def performance_hourly_calls(campaign_id: int, username: Optional[str] = Form(None), password: Optional[str] = Form(None)) -> dict:
+    if campaign_id <= 0:
+        raise HTTPException(status_code=422, detail='Invalid campaign ID.')
+    credentials = campaign_credentials(username, password)
+
+    def fetch():
+        client = XcallyClient(settings, *credentials)
+        try:
+            return client.campaign_hourly_answered(campaign_id)
+        finally:
+            client.close()
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(executor, fetch)
+    except XcallyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post('/api/performance/campaigns/{campaign_id}/hourly-calls/stream')
+async def performance_hourly_calls_stream(campaign_id: int, username: Optional[str] = Form(None), password: Optional[str] = Form(None)):
+    if campaign_id <= 0:
+        raise HTTPException(status_code=422, detail='Invalid campaign ID.')
+    credentials = campaign_credentials(username, password)
+
+    def chunks():
+        client = XcallyClient(settings, *credentials)
+        try:
+            for snapshot in client.iter_campaign_hourly_answered(campaign_id):
+                yield json.dumps(snapshot, separators=(',', ':')) + '\n'
+        except XcallyError as exc:
+            yield json.dumps({'error': str(exc)}) + '\n'
+        finally:
+            client.close()
+
+    return StreamingResponse(chunks(), media_type='application/x-ndjson', headers={'Cache-Control': 'no-store'})
 
 
 @app.post("/api/campaign-batches", status_code=202)

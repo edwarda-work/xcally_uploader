@@ -19,6 +19,7 @@ function page() {
       ? {campaigns: [{id: 1, name: 'First'}, {id: 2, name: 'Second'}]}
       : {id: Number(url.split('/').at(-1)), name: 'First', active: true, agents: [], list_count: 1,
         realtime: {logged_in: 2, available: 1, talking: 1, ringing: 0},
+        call_totals: {answered: 604, total: 674, abandoned: 290},
         recent_calls: [{status: 'Answer', started_at: '2026-10-01T10:04:17Z', ended_at: '2026-10-01T10:05:11Z'}]};
     return {ok: true, json: async () => data};
   };
@@ -42,6 +43,9 @@ test('opening loads only names and checks only the chosen campaign', async () =>
   assert.equal(p.$('performance-check').textContent, 'Refresh campaign');
   assert.match(p.$('performance-detail').innerHTML, /Answer/);
   assert.match(p.$('performance-detail').innerHTML, /Agents ringing/);
+  assert.match(p.$('performance-detail').innerHTML, /Total answered<\/div><div class="stat-value">604/);
+  assert.match(p.$('performance-detail').innerHTML, /Total connected<\/div><div class="stat-value">674/);
+  assert.match(p.$('performance-detail').innerHTML, /Abandoned<\/div><div class="stat-value">290/);
   assert.doesNotMatch(p.$('performance-detail').innerHTML, /Calls originating now/);
   await p.$('performance-check').listeners.click();
   assert.deepEqual(p.calls, ['/api/performance/campaigns', '/api/performance/campaigns/2', '/api/performance/campaigns/2']);

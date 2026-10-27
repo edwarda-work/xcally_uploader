@@ -1,6 +1,7 @@
 import csv
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -191,9 +192,11 @@ class CampaignTransportTests(unittest.TestCase):
         }
         self.client.collection = MagicMock(side_effect=lambda endpoint: data[endpoint])
         self.client.realtime_agents = MagicMock(return_value=data['/realtime/agents'])
+        self.client.campaign_realtime_totals = MagicMock(return_value={'answered': 604, 'total': 674, 'abandoned': 290})
         self.client.campaign_recent_calls = MagicMock(return_value=[{'status': 'Answer', 'started_at': '2026-10-01T10:04:17Z', 'ended_at': '2026-10-01T10:05:11Z'}])
         result = self.client.campaign_monitor_snapshot(20)
         self.assertEqual(result['realtime'], {'logged_in': 2, 'available': 1, 'talking': 1, 'ringing': 0})
+        self.assertEqual(result['call_totals'], {'answered': 604, 'total': 674, 'abandoned': 290})
         self.assertEqual(result['recent_calls'][0]['status'], 'Answer')
         agent_result = self.client.campaign_agent_status(20)
         self.assertEqual(agent_result['agents'][0]['online'], False)
@@ -203,11 +206,37 @@ class CampaignTransportTests(unittest.TestCase):
         self.client.queue = MagicMock(return_value={'id': 20, 'name': 'Campaign', 'type': 'outbound', 'dialActive': True})
         self.client.collection = MagicMock(side_effect=[[{'id': 4, 'name': 'Agent'}], [{'id': 9}]])
         self.client.realtime_agents = MagicMock(return_value=[])
+        self.client.campaign_realtime_totals = MagicMock(side_effect=XcallyError('Queue metrics unavailable.'))
         self.client.campaign_recent_calls = MagicMock(return_value=[])
         result = self.client.campaign_monitor_snapshot(20)
         self.assertIsNone(result['realtime']['available'])
         self.assertIsNone(result['realtime']['logged_in'])
         self.assertIn('None of this campaign', result['agents_error'])
+        self.assertIsNone(result['call_totals']['answered'])
+        self.assertEqual(result['call_totals_error'], 'Queue metrics unavailable.')
+
+    def test_realtime_queue_totals_match_selected_campaign(self):
+        response = MagicMock()
+        response.ok = True
+        response.json.return_value = {'count': 2, 'rows': [
+            {'id': 19, 'type': 'outbound', 'answered': 999, 'total': 999, 'abandoned': 999},
+            {'id': 20, 'type': 'outbound', 'answered': 604, 'total': 674.0, 'abandoned': 290},
+        ]}
+        self.client.request = MagicMock(return_value=response)
+        self.assertEqual(self.client.campaign_realtime_totals(20), {'answered': 604, 'total': 674, 'abandoned': 290})
+        self.assertEqual(self.client.request.call_args.args, ('GET', '/realtime/queues'))
+        self.assertEqual(self.client.request.call_args.kwargs['params']['type'], 'outbound')
+        response.json.return_value = {'count': 1, 'rows': [{'id': 20, 'type': 'outbound', 'answered': None, 'total': 0, 'abandoned': -1}]}
+        self.assertEqual(self.client.campaign_realtime_totals(20), {'answered': None, 'total': 0, 'abandoned': None})
+
+    def test_realtime_queue_totals_read_later_page(self):
+        first, second = MagicMock(), MagicMock()
+        first.ok = second.ok = True
+        first.json.return_value = {'count': 251, 'rows': [{'id': index, 'type': 'outbound'} for index in range(1, 251)]}
+        second.json.return_value = {'count': 251, 'rows': [{'id': 251, 'type': 'outbound', 'answered': 6, 'total': 7, 'abandoned': 1}]}
+        self.client.request = MagicMock(side_effect=[first, second])
+        self.assertEqual(self.client.campaign_realtime_totals(251), {'answered': 6, 'total': 7, 'abandoned': 1})
+        self.assertEqual(self.client.request.call_args.kwargs['params']['offset'], 250)
 
     def test_realtime_routes_use_api_prefix(self):
         self.client.session.request = MagicMock()
@@ -239,6 +268,106 @@ class CampaignTransportTests(unittest.TestCase):
         response.json.return_value['rows'][0]['VoiceQueueId'] = 21
         with self.assertRaisesRegex(XcallyError, 'different campaign'):
             self.client.campaign_recent_calls(20)
+
+    def test_hourly_answered_counts_only_attributed_calls_in_completed_hour(self):
+        self.client.queue = MagicMock(return_value={'id': 20, 'type': 'outbound'})
+        self.client.collection = MagicMock(return_value=[{'id': 4}, {'id': 5}])
+        response = MagicMock()
+        response.ok = True
+        response.json.return_value = {'count': 6, 'rows': [
+            {'id': 5, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'next', 'statedesc': 'Answer', 'createdAt': '2026-10-02T10:05:00Z'},
+            {'id': 4, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'call-1', 'statedesc': 'Answer', 'createdAt': '2026-10-02T09:50:00Z'},
+            {'id': 3, 'VoiceQueueId': 20, 'UserId': 5, 'uniqueid': 'call-2', 'statedesc': 'Answer', 'createdAt': '2026-10-02T09:40:00Z'},
+            {'id': 2, 'VoiceQueueId': 20, 'UserId': None, 'uniqueid': 'busy', 'statedesc': 'Busy', 'createdAt': '2026-10-02T09:30:00Z'},
+            {'id': 1, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'old', 'statedesc': 'Answer', 'createdAt': '2026-10-02T08:59:00Z'},
+            {'id': 0, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'before', 'statedesc': 'Answer', 'createdAt': '2026-10-02T06:59:00Z'},
+        ]}
+        self.client.request = MagicMock(return_value=response)
+        result = self.client.campaign_hourly_answered(20, datetime(2026, 10, 2, 10, 30, tzinfo=timezone.utc))
+        self.assertEqual(result['totals'], {4: 3, 5: 1})
+        self.assertEqual(result['period_start'], '2026-10-02T07:00:00+00:00')
+        self.assertEqual(len(result['hours']), 4)
+        self.assertEqual(result['hours'][2]['counts'], {4: 1, 5: 1})
+        self.assertEqual(result['hours'][3]['counts'], {4: 1, 5: 0})
+        self.assertEqual(result['hours'][1]['counts'], {4: 1, 5: 0})
+        self.assertFalse(result['hours'][3]['complete'])
+        self.assertEqual(self.client.request.call_count, 1)
+        self.assertEqual(self.client.request.call_args.kwargs['params']['VoiceQueueId'], 20)
+
+    def test_hourly_answered_reads_later_pages_within_today(self):
+        self.client.queue = MagicMock(return_value={'id': 20, 'type': 'outbound'})
+        self.client.collection = MagicMock(return_value=[{'id': 4}])
+        first, second = MagicMock(), MagicMock()
+        first.ok = second.ok = True
+        first.json.return_value = {'count': 251, 'rows': [
+            {'id': 251 - index, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': f'call-{index}',
+             'statedesc': 'Answer', 'createdAt': '2026-10-02T09:30:00Z'} for index in range(250)]}
+        second.json.return_value = {'count': 251, 'rows': [
+            {'id': 1, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'old',
+             'statedesc': 'Answer', 'createdAt': '2026-10-02T08:59:00Z'}]}
+        self.client.request = MagicMock(side_effect=[first, second])
+        updates = self.client.iter_campaign_hourly_answered(20, datetime(2026, 10, 2, 10, 30, tzinfo=timezone.utc))
+        initial = next(updates)
+        self.assertEqual((initial['processed'], initial['complete']), (0, False))
+        first_page = next(updates)
+        self.assertEqual((first_page['processed'], first_page['complete'], first_page['totals'][4]), (250, False, 250))
+        result = list(updates)[-1]
+        self.assertEqual(result['totals'][4], 251)
+        self.assertEqual(result['hours'][2]['counts'][4], 250)
+        self.assertEqual(self.client.request.call_args.kwargs['params']['offset'], 250)
+
+    def test_hourly_answered_tolerates_page_overlap_and_missing_row_ids(self):
+        self.client.queue = MagicMock(return_value={'id': 20, 'type': 'outbound'})
+        self.client.collection = MagicMock(return_value=[{'id': 4}])
+        first, second = MagicMock(), MagicMock()
+        first.ok = second.ok = True
+        first_rows = [
+            {'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': f'call-{index}',
+             'statedesc': 'Answer', 'createdAt': '2026-10-02T09:30:00Z'}
+            for index in range(250)
+        ]
+        first.json.return_value = {'count': 251, 'rows': first_rows}
+        second.json.return_value = {'count': 251, 'rows': [first_rows[-1],
+            {'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'older',
+             'statedesc': 'Answer', 'createdAt': '2026-10-02T08:59:00Z'}]}
+        self.client.request = MagicMock(side_effect=[first, second])
+        result = self.client.campaign_hourly_answered(20, datetime(2026, 10, 2, 10, 30, tzinfo=timezone.utc))
+        self.assertEqual(result['totals'][4], 251)
+        self.assertEqual(result['hours'][2]['counts'][4], 250)
+
+    def test_hourly_answered_counts_rows_when_timestamps_differ_from_id_order(self):
+        self.client.queue = MagicMock(return_value={'id': 20, 'type': 'outbound'})
+        self.client.collection = MagicMock(return_value=[{'id': 4}])
+        response = MagicMock()
+        response.ok = True
+        response.json.return_value = {'count': 3, 'rows': [
+            {'id': 3, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'later',
+             'statedesc': 'Answer', 'createdAt': '2026-10-02T09:05:00Z'},
+            {'id': 2, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'earlier',
+             'statedesc': 'Answer', 'createdAt': '2026-10-02T08:55:00Z'},
+            {'id': 1, 'VoiceQueueId': 20, 'UserId': 4, 'uniqueid': 'middle',
+             'statedesc': 'Answer', 'createdAt': '2026-10-02T09:00:00Z'},
+        ]}
+        self.client.request = MagicMock(return_value=response)
+        result = self.client.campaign_hourly_answered(20, datetime(2026, 10, 2, 10, 30, tzinfo=timezone.utc))
+        self.assertEqual(result['totals'][4], 3)
+        self.assertEqual(result['hours'][1]['counts'][4], 1)
+        self.assertEqual(result['hours'][2]['counts'][4], 2)
+        self.assertEqual(self.client.request.call_args.kwargs['params']['sort'], '-createdAt')
+
+    def test_hourly_columns_cover_7am_through_current_hour(self):
+        self.client.queue = MagicMock(return_value={'id': 20, 'type': 'outbound'})
+        self.client.collection = MagicMock(return_value=[])
+        self.client.request = MagicMock()
+        at_eleven = self.client.campaign_hourly_answered(20, datetime(2026, 10, 2, 11, 0, tzinfo=timezone.utc))
+        self.assertEqual(len(at_eleven['hours']), 5)
+        self.assertEqual(at_eleven['hours'][0]['start'], '2026-10-02T07:00:00+00:00')
+        self.assertEqual(at_eleven['hours'][-1]['end'], '2026-10-02T12:00:00+00:00')
+        self.assertFalse(at_eleven['hours'][-1]['complete'])
+        at_seven = self.client.campaign_hourly_answered(20, datetime(2026, 10, 2, 19, 0, tzinfo=timezone.utc))
+        self.assertEqual(len(at_seven['hours']), 12)
+        self.assertTrue(at_seven['hours'][-1]['complete'])
+        self.client.request.assert_not_called()
 
     def test_import_count_verification(self):
         def response(data, headers=None):

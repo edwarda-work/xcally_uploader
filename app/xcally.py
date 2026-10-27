@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import csv
+import math
 import time
 import unicodedata
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -223,10 +226,51 @@ class XcallyClient:
             'ringing': sum(agent['online'] is True and agent['voice_status'] == 'ringing' for agent in snapshot['agents']) if known_voice else None,
         }
         try:
+            snapshot['call_totals'] = self.campaign_realtime_totals(queue_id)
+        except XcallyError as exc:
+            snapshot['call_totals'] = {'answered': None, 'total': None, 'abandoned': None}
+            snapshot['call_totals_error'] = str(exc)
+        try:
             snapshot['recent_calls'] = self.campaign_recent_calls(queue_id)
         except XcallyError:
             snapshot['calls_error'] = 'xCALLY call history is unavailable.'
         return snapshot
+
+    def campaign_realtime_totals(self, queue_id: int) -> dict:
+        """Read the selected outbound queue's counters from xCALLY realtime queues."""
+        offset = 0
+        seen: set[int] = set()
+        for _ in range(100):
+            response = self.request('GET', '/realtime/queues', params={
+                'channel': 'voice', 'type': 'outbound', 'limit': 250,
+                'offset': offset, 'sort': 'id',
+            })
+            if not response.ok:
+                raise XcallyError(f'Unable to read /realtime/queues (HTTP {response.status_code}).')
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid realtime queue data.') from exc
+            rows = self.rows(data)
+            for row in rows:
+                row_id = row.get('id')
+                if type(row_id) is not int:
+                    raise XcallyError('xCALLY omitted a realtime queue ID.')
+                if row_id in seen:
+                    continue
+                seen.add(row_id)
+                if row_id == queue_id:
+                    if row.get('type') not in ('outbound', None):
+                        raise XcallyError('xCALLY returned counters for a different queue type.')
+                    def counter(name):
+                        value = row.get(name)
+                        return int(value) if type(value) in (int, float) and math.isfinite(value) and value >= 0 and value == int(value) else None
+                    return {name: counter(name) for name in ('answered', 'total', 'abandoned')}
+            offset += len(rows)
+            count = data.get('count') if isinstance(data, dict) else None
+            if not rows or type(count) is int and offset >= count:
+                break
+        raise XcallyError('The selected campaign was not found in xCALLY realtime queues.')
 
     def campaign_agent_status(self, queue_id: int) -> dict:
         queue = self.queue(queue_id)
@@ -305,6 +349,118 @@ class XcallyClient:
                 'ended_at': row.get('endtime'),
             })
         return result
+
+    def campaign_hourly_answered(self, queue_id: int, now: datetime | None = None) -> dict:
+        """Return the completed hourly scan for callers that need one result."""
+        for result in self.iter_campaign_hourly_answered(queue_id, now):
+            pass
+        return result
+
+    def iter_campaign_hourly_answered(self, queue_id: int, now: datetime | None = None):
+        """Yield cumulative agent counts after each Hopper History page."""
+        queue = self.queue(queue_id)
+        if queue.get('type') != 'outbound':
+            raise XcallyError('The selected campaign is not outbound.')
+        assigned = self.collection(f'/voice/queues/{queue_id}/users')
+        agent_ids = {row['id'] for row in assigned}
+        current = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo('Africa/Accra'))
+        start = current.replace(hour=7, minute=0, second=0, microsecond=0)
+        close = current.replace(hour=19, minute=0, second=0, microsecond=0)
+        visible_end = min(close, current.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+        hours = []
+        boundary = start
+        while boundary < visible_end:
+            next_boundary = boundary + timedelta(hours=1)
+            hours.append({'start': boundary.isoformat(), 'end': next_boundary.isoformat(),
+                          'complete': current >= next_boundary,
+                          'counts': {agent_id: 0 for agent_id in agent_ids}})
+            boundary = next_boundary
+        result = {'period_start': start.isoformat(), 'period_end': close.isoformat(),
+                  'as_of': current.isoformat(), 'timezone': 'Africa/Accra',
+                  'hours': hours, 'totals': {agent_id: 0 for agent_id in agent_ids}}
+        if not agent_ids or not hours:
+            yield {**result, 'processed': 0, 'complete': True}
+            return
+        yield {**result, 'processed': 0, 'complete': False}
+        start_utc = start.astimezone(timezone.utc)
+        upper_utc = min(current, close).astimezone(timezone.utc)
+        seen_calls: set[str] = set()
+        seen_rows: set[tuple[str, int | str]] = set()
+        offset = 0
+        stalled_pages = 0
+        for page in range(1, 1001):
+            response = self.request('GET', f'/voice/queues/{queue_id}/hopper_histories', params={
+                'VoiceQueueId': queue_id,
+                'fields': 'id,VoiceQueueId,UserId,uniqueid,statedesc,createdAt',
+                'limit': 250, 'offset': offset, 'page': page, 'sort': '-createdAt',
+            })
+            if not response.ok:
+                raise XcallyError(f'Unable to read hourly campaign calls (HTTP {response.status_code}).')
+            try:
+                data = response.json()
+                rows = self.rows(data)
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid hourly call data.') from exc
+            if not rows:
+                break
+            page_has_today = False
+            new_rows = 0
+            for row in rows:
+                row_id = row.get('id')
+                unique_id = row.get('uniqueid')
+                if type(row_id) is int:
+                    identity = ('id', row_id)
+                elif isinstance(unique_id, str) and unique_id:
+                    identity = ('uniqueid', unique_id)
+                else:
+                    raise XcallyError('xCALLY omitted hourly call identifiers.')
+                if identity in seen_rows:
+                    continue
+                seen_rows.add(identity)
+                new_rows += 1
+                if row.get('VoiceQueueId') != queue_id:
+                    raise XcallyError('xCALLY returned hourly calls for a different campaign.')
+                stamp = row.get('createdAt')
+                if not isinstance(stamp, str):
+                    raise XcallyError('Hourly call time is missing from xCALLY.')
+                try:
+                    call_time = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+                except ValueError as exc:
+                    raise XcallyError('xCALLY returned an invalid hourly call time.') from exc
+                if call_time.tzinfo is None:
+                    raise XcallyError('xCALLY returned an hourly call time without a timezone.')
+                call_time = call_time.astimezone(timezone.utc)
+                if call_time < start_utc:
+                    continue
+                page_has_today = True
+                if call_time > upper_utc or row.get('statedesc') != 'Answer':
+                    continue
+                agent_id = row.get('UserId')
+                if agent_id not in result['totals']:
+                    continue
+                call_id = row.get('uniqueid') or row.get('id')
+                if call_id is None:
+                    raise XcallyError('xCALLY returned an answered call without an identifier.')
+                call_id = str(call_id)
+                if call_id not in seen_calls:
+                    seen_calls.add(call_id)
+                    hour_index = int((call_time - start_utc).total_seconds() // 3600)
+                    if 0 <= hour_index < len(hours):
+                        hours[hour_index]['counts'][agent_id] += 1
+                        result['totals'][agent_id] += 1
+            offset += len(rows)
+            yield {**result, 'processed': offset, 'complete': False}
+            stalled_pages = stalled_pages + 1 if new_rows == 0 else 0
+            if stalled_pages >= 2:
+                raise XcallyError('xCALLY hourly call pagination stopped advancing.')
+            if not page_has_today:
+                break
+            count = data.get('count') if isinstance(data, dict) else None
+            if type(count) is int and offset >= count:
+                break
+        else:
+            raise XcallyError('Hourly call history exceeds the safe scan limit.')
+        yield {**result, 'processed': offset, 'complete': True}
 
     def wait_for_import(self, list_id: int, expected_count: int) -> None:
         deadline = time.monotonic() + self.settings.import_wait_seconds

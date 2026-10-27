@@ -39,6 +39,7 @@
 
   function renderDetail(campaign) {
     const realtime = campaign.realtime || {};
+    const callTotals = campaign.call_totals || {};
     const calls = campaign.recent_calls || [];
     const callRows = calls.map(call => `<tr><td>${cell(call.status)}</td><td>${cell(formatTime(call.started_at))}</td><td>${cell(formatTime(call.ended_at))}</td></tr>`).join('');
     $('performance-detail').innerHTML = `<div class="card"><h2>${escapeHtml(campaign.name)}</h2>
@@ -49,10 +50,15 @@
       <div class="stats"><div class="stat"><div class="stat-label">Agents logged in</div><div class="stat-value">${cell(realtime.logged_in)}</div></div>
       <div class="stat"><div class="stat-label">Agents talking</div><div class="stat-value">${cell(realtime.talking)}</div></div>
       <div class="stat"><div class="stat-label">Linked contact lists</div><div class="stat-value">${cell(campaign.list_count)}</div></div></div>
+      <h3>Campaign call totals</h3>
+      ${campaign.call_totals_error ? `<div class="notice">${escapeHtml(campaign.call_totals_error)}</div>` : ''}
+      <div class="stats"><div class="stat"><div class="stat-label">Total answered</div><div class="stat-value">${cell(callTotals.answered)}</div></div>
+      <div class="stat"><div class="stat-label">Total connected</div><div class="stat-value">${cell(callTotals.total)}</div></div>
+      <div class="stat"><div class="stat-label">Abandoned</div><div class="stat-value">${cell(callTotals.abandoned)}</div></div></div>
       <p><strong>Assigned agents:</strong> ${cell(campaign.agents?.length)}</p>
       <button id="performance-view-agents" class="button button-secondary">View agent status</button>
       <h3>Recent calls</h3>${campaign.calls_error ? `<p class="monitor-note">${escapeHtml(campaign.calls_error)}</p>` : callRows ? `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Started</th><th>Ended</th></tr></thead><tbody>${callRows}</tbody></table></div>` : '<p class="monitor-note">No call history returned for this campaign.</p>'}
-      <p class="monitor-note">Agent counts are calculated from assigned agents’ current voice statuses. Recent calls show the latest 10 history entries returned by xCALLY.</p></div>`;
+      <p class="monitor-note">Call totals are xCALLY's realtime queue counters for this campaign. Agent counts come from assigned agents’ current voice statuses. Recent calls show the latest 10 history entries returned by xCALLY.</p></div>`;
     $('performance-view-agents').addEventListener('click', () => {
       window.agentUI?.openCampaign(campaign.id, $('performance-username').value, $('performance-password').value);
     });
