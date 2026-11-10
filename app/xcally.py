@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+import re
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -13,7 +14,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 from urllib3.exceptions import InsecureRequestWarning
 
-from .domain import MarketConfig
+from .domain import PHONE_HEADERS, MarketConfig
 from .settings import Settings
 
 
@@ -54,9 +55,63 @@ def read_headers(csv_path: Path) -> list[str]:
     return cleaned
 
 
+SCIENTIFIC_NUMBER = re.compile(r"^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$")
+
+
+def phone_value_error(header: str, value: str, line: int) -> str | None:
+    """Explain a phone value that Excel shortened to scientific notation."""
+    if header in PHONE_HEADERS and SCIENTIFIC_NUMBER.match(value.strip()):
+        return (f"{header} at CSV line {line} is in scientific notation ({value.strip()}), so digits are lost. "
+                "In Excel, format the phone columns as Number with 0 decimals or as Text, then save the CSV again.")
+    return None
+
+
+def validate_phone_columns(csv_path: Path) -> None:
+    """Reject the file before any xCALLY write if a phone column was shortened by Excel."""
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.reader(handle)
+            headers = [header.strip() for header in next(reader, [])]
+            phone_columns = [(index, header) for index, header in enumerate(headers) if header in PHONE_HEADERS]
+            if not phone_columns:
+                return
+            for row in reader:
+                for index, header in phone_columns:
+                    if index < len(row):
+                        error = phone_value_error(header, row[index], reader.line_num)
+                        if error:
+                            raise ValueError(error)
+    except UnicodeDecodeError as exc:
+        raise ValueError("CSV must use UTF-8 encoding.") from exc
+
+
+def check_column_targets(headers: Iterable[str], market: MarketConfig) -> None:
+    """Before any xCALLY write, reject two CSV columns that fill the same field."""
+    owners: dict[str, str] = {}
+    for header in headers:
+        if not header or header not in market.allowed_headers:
+            continue
+        if header in market.additional_phone_bindings:
+            target = "additional_phone:" + normalize_alias(market.additional_phone_bindings[header])
+        else:
+            target = market.direct_bindings.get(header) or normalize_alias(market.alias_overrides.get(header, header))
+        if target in owners:
+            raise ValueError(f"{owners[target]} and {header} both map to the same xCALLY field. Remove one of these columns.")
+        owners[target] = header
+
+
 def build_binding(
-    headers: Iterable[str], field_rows: Iterable[dict[str, Any]], market: MarketConfig
+    headers: Iterable[str], field_rows: Iterable[dict[str, Any]], market: MarketConfig,
+    item_types: Iterable[dict[str, Any]] = (),
 ) -> tuple[dict[str, str], list[str]]:
+    """Map CSV headers to the xCALLY import binding.
+
+    Contact fields use their own key (phone), custom fields use cf_<id>, and
+    additional phones use the contact item type's exact name, as the xCALLY
+    import screen does.
+    """
+    item_type_names = {normalize_alias(row["name"]): row["name"]
+                       for row in item_types if isinstance(row.get("name"), str) and row["name"].strip()}
     alias_to_field_id: dict[str, int] = {}
     for row in field_rows:
         alias = row.get("alias") or row.get("name")
@@ -66,6 +121,12 @@ def build_binding(
 
     binding: dict[str, str] = {}
     skipped: list[str] = []
+
+    def bind(target: str, header: str) -> None:
+        if binding.get(target, header) != header:
+            raise ValueError(f"{binding[target]} and {header} both map to the same xCALLY field. Remove one of these columns.")
+        binding[target] = header
+
     for header in headers:
         if not header:
             continue
@@ -73,7 +134,14 @@ def build_binding(
             skipped.append(header)
             continue
         if header in market.direct_bindings:
-            binding[market.direct_bindings[header]] = header
+            bind(market.direct_bindings[header], header)
+            continue
+        if header in market.additional_phone_bindings:
+            name = item_type_names.get(normalize_alias(market.additional_phone_bindings[header]))
+            if name is None:
+                skipped.append(header)
+            else:
+                bind(name, header)
             continue
         candidates = []
         if header in market.alias_overrides:
@@ -83,7 +151,7 @@ def build_binding(
         if field_id is None:
             skipped.append(header)
         else:
-            binding[f"cf_{field_id}"] = header
+            bind(f"cf_{field_id}", header)
 
     for header, aliases in market.duplicate_alias_bindings.items():
         if header not in headers:
@@ -529,6 +597,36 @@ class XcallyClient:
             raise XcallyError('Hourly call history exceeds the safe scan limit.')
         yield {**result, 'processed': offset, 'complete': True}
 
+    def contact_count(self, list_id: int) -> int:
+        """Contacts currently in a list, from the paginated contacts collection."""
+        response = self.request('GET', '/cm/contacts', params={'ListId': list_id, 'limit': 1, 'fields': 'id'})
+        if not response.ok:
+            raise XcallyError(f'Unable to count contacts in list {list_id} (HTTP {response.status_code}).')
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise XcallyError('xCALLY returned invalid contact data.') from exc
+        count = data.get('count') if isinstance(data, dict) else None
+        if count is None:
+            count = response.headers.get('Content-Range', '').rsplit('/', 1)[-1]
+        if isinstance(count, str) and count.isdigit():
+            count = int(count)
+        if type(count) is not int or count < 0:
+            raise XcallyError('Contact count could not be read from xCALLY.')
+        return count
+
+    def contacts_by_phone(self, list_id: int, phone: str) -> list[dict]:
+        data = self.json_request('GET', '/cm/contacts', params={'ListId': list_id, 'phone': phone, 'fields': 'id,phone,ListId', 'limit': 2})
+        rows = self.rows(data)
+        if any(row.get('ListId') not in (None, list_id) for row in rows):
+            raise XcallyError('xCALLY returned contacts from a different list.')
+        return rows
+
+    def contact_phones(self, contact_id: int) -> list[dict]:
+        """Additional phones of one contact (the endpoint the xCALLY contact screen uses)."""
+        data = self.json_request('GET', f'/cm/contacts/{contact_id}/phones')
+        return self.rows(data)
+
     def wait_for_import(self, list_id: int, expected_count: int) -> None:
         deadline = time.monotonic() + self.settings.import_wait_seconds
         while True:
@@ -569,6 +667,11 @@ class XcallyClient:
             )
         except requests.RequestException as exc:
             raise XcallyError("Unable to connect to xCALLY.") from exc
+
+    def contact_item_types(self) -> list[dict[str, Any]]:
+        """Additional phone types, e.g. Disbursement Wallet. Not in the Swagger spec; used by the web import screen."""
+        return [{"id": row.get("id"), "name": row.get("name")}
+                for row in self.collection("/contact_item_types", fields="id,name")]
 
     def create_list(self, list_name: str) -> dict[str, Any]:
         response = self.request("POST", "/cm/lists", json={"name": list_name})

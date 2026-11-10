@@ -26,6 +26,7 @@ from app.paths import PROJECT_DIR, data_directory
 from app.batches import BatchRepository
 from app.campaigns import run_batch
 from app.xcally import XcallyClient, XcallyError
+from app.readiness import check_readiness, registry as readiness_registry
 
 
 DATA_DIR = data_directory()
@@ -393,6 +394,29 @@ async def upload_files(
     results = await asyncio.gather(*(handle_one(upload) for upload in files))
     history_repository.add(result.to_dict() for result in results)
     return {"results": [result.to_dict() for result in results]}
+
+
+@app.post("/api/uploads/{list_id}/readiness")
+async def upload_readiness(
+    list_id: int, expected_contacts: Optional[int] = Form(None),
+    username: Optional[str] = Form(None), password: Optional[str] = Form(None),
+) -> dict:
+    """Read only: has xCALLY finished importing this list's contacts and additional phones?"""
+    if list_id <= 0 or (expected_contacts is not None and expected_contacts < 0):
+        raise HTTPException(status_code=422, detail="Invalid list.")
+    credentials = campaign_credentials(username, password)
+
+    def check():
+        client = XcallyClient(settings, *credentials)
+        try:
+            return check_readiness(client, list_id, readiness_registry.get(list_id), expected_contacts)
+        finally:
+            client.close()
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(executor, check)
+    except XcallyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/history")
