@@ -77,6 +77,21 @@ agent IDs), `batch_id` (UUID), and optional `base_name`.
 
 ## Campaign performance
 
+Each selected campaign shows today's **Total answered**, **Total calls**,
+**Abandoned**, and **Answer rate**. Totals count Hopper History rows for that queue
+whose `createdAt` falls between midnight in Africa/Accra and the time of the check.
+This follows the exported Calls Summary report's `COUNT(id)` method: `Answer`
+and `Abandoned` outcomes contribute to their respective counters; all outcomes
+contribute to total calls, including retries and non-dialable outcomes such as
+Blacklist. This is a history-entry rate, not a unique-contact or final-record rate.
+Answer rate is answered divided by total, displayed with one decimal place.
+Missing data or zero total displays a dash for the rate. A successful empty
+history scan displays zero counts. Invalid, incorrectly scoped, unsorted, or
+incomplete history scans display an error instead of partial totals.
+History is paged newest first up to 1,000 pages; totals may take time for busy
+campaigns. Nothing is created or modified in Analytics. Compare live results with
+a campaign-scoped report using the same `createdAt` reporting window.
+
 The **Multi Campaigns** tab includes **Turn campaigns ON or OFF**. Enter credentials
 above, load campaign status, then use individual ON/OFF buttons or select several
 campaigns (including Select all matching campaigns) and use **Turn selected ON/OFF**.
@@ -99,10 +114,9 @@ that campaign's active state, assigned users, linked contact-list count, and
 current agent data. Realtime agents are matched to the selected campaign's
 assigned agent IDs. Available, logged-in, talking, and ringing counts are
 calculated from `/api/realtime/agents` with the voice-channel filter. The
-campaign page also reads the selected outbound row from `/api/realtime/queues`
-for xCALLY's `answered`, `total`, and `abandoned` counters. These appear as
-Total answered, Total connected, and Abandoned. If either realtime source is
-unavailable, its affected figures show a dash instead of zero.
+campaign page reads `/voice/queues/{id}/hopper_histories` for call totals,
+because realtime queue counters may be null. If a data source is unavailable,
+its affected figures show a dash instead of zero.
 **Load campaigns** refreshes the names; **Check campaign** becomes **Refresh
 campaign** after the first read and updates only the selected campaign. Its backend
 uses `POST /api/performance/campaigns` and
