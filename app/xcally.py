@@ -226,7 +226,8 @@ class XcallyClient:
             'ringing': sum(agent['online'] is True and agent['voice_status'] == 'ringing' for agent in snapshot['agents']) if known_voice else None,
         }
         try:
-            snapshot['call_totals'] = self.campaign_realtime_totals(queue_id)
+            snapshot['call_totals'] = self.campaign_history_totals(queue_id)
+            snapshot['call_totals_source'] = 'hopper_history_today'
         except XcallyError as exc:
             snapshot['call_totals'] = {'answered': None, 'total': None, 'abandoned': None}
             snapshot['call_totals_error'] = str(exc)
@@ -235,6 +236,72 @@ class XcallyClient:
         except XcallyError:
             snapshot['calls_error'] = 'xCALLY call history is unavailable.'
         return snapshot
+
+    def campaign_history_totals(self, queue_id: int, now: datetime | None = None) -> dict:
+        """Count history rows like Calls Summary, scoped to one queue and today.
+
+        A history row is the counting unit (COUNT(id)), including retries, rather
+        than a distinct contact or the final disposition in cm_hopper_final.
+        """
+        current = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo('Africa/Accra'))
+        start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        totals = {'answered': 0, 'total': 0, 'abandoned': 0}
+        seen: set[int] = set()
+        offset = 0
+        previous_time = None
+        for page in range(1, 1001):
+            response = self.request('GET', f'/voice/queues/{queue_id}/hopper_histories', params={
+                'VoiceQueueId': queue_id, 'fields': 'id,VoiceQueueId,statedesc,createdAt',
+                'limit': 250, 'offset': offset, 'page': page, 'sort': '-createdAt,-id',
+            })
+            if not response.ok:
+                raise XcallyError(f'Unable to read campaign totals from Hopper History (HTTP {response.status_code}).')
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid campaign history data.') from exc
+            rows = self.rows(data)
+            if not rows:
+                return totals
+            new_rows = 0
+            reached_previous_day = False
+            for row in rows:
+                if row.get('VoiceQueueId') != queue_id:
+                    raise XcallyError('xCALLY returned history totals for a different campaign.')
+                identity = row.get('id')
+                if type(identity) is not int:
+                    raise XcallyError('xCALLY omitted campaign history row IDs.')
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                new_rows += 1
+                try:
+                    stamp = datetime.fromisoformat(row['createdAt'].replace('Z', '+00:00'))
+                    if stamp.tzinfo is None:
+                        raise ValueError('Missing timezone')
+                except (KeyError, AttributeError, TypeError, ValueError) as exc:
+                    raise XcallyError('xCALLY returned a missing or invalid campaign history timestamp.') from exc
+                if previous_time is not None and stamp > previous_time:
+                    raise XcallyError('Campaign history was not sorted newest first. Totals could not be verified.')
+                previous_time = stamp
+                if stamp < start:
+                    reached_previous_day = True
+                    continue
+                if stamp > current:
+                    continue
+                state = row.get('statedesc')
+                if not isinstance(state, str) or not state.strip():
+                    raise XcallyError('xCALLY omitted a campaign history outcome.')
+                totals['total'] += 1
+                totals['answered'] += state == 'Answer'
+                totals['abandoned'] += state == 'Abandoned'
+            if not new_rows:
+                raise XcallyError('Campaign history pagination stopped advancing. Totals could not be verified.')
+            offset += len(rows)
+            count = data.get('count') if isinstance(data, dict) else None
+            if reached_previous_day or type(count) is int and offset >= count:
+                return totals
+        raise XcallyError('Campaign history exceeds the safe scan limit. Totals could not be verified.')
 
     def campaign_realtime_totals(self, queue_id: int) -> dict:
         """Read the selected outbound queue's counters from xCALLY realtime queues."""

@@ -192,7 +192,7 @@ class CampaignTransportTests(unittest.TestCase):
         }
         self.client.collection = MagicMock(side_effect=lambda endpoint: data[endpoint])
         self.client.realtime_agents = MagicMock(return_value=data['/realtime/agents'])
-        self.client.campaign_realtime_totals = MagicMock(return_value={'answered': 604, 'total': 674, 'abandoned': 290})
+        self.client.campaign_history_totals = MagicMock(return_value={'answered': 604, 'total': 674, 'abandoned': 290})
         self.client.campaign_recent_calls = MagicMock(return_value=[{'status': 'Answer', 'started_at': '2026-10-01T10:04:17Z', 'ended_at': '2026-10-01T10:05:11Z'}])
         result = self.client.campaign_monitor_snapshot(20)
         self.assertEqual(result['realtime'], {'logged_in': 2, 'available': 1, 'talking': 1, 'ringing': 0})
@@ -206,7 +206,7 @@ class CampaignTransportTests(unittest.TestCase):
         self.client.queue = MagicMock(return_value={'id': 20, 'name': 'Campaign', 'type': 'outbound', 'dialActive': True})
         self.client.collection = MagicMock(side_effect=[[{'id': 4, 'name': 'Agent'}], [{'id': 9}]])
         self.client.realtime_agents = MagicMock(return_value=[])
-        self.client.campaign_realtime_totals = MagicMock(side_effect=XcallyError('Queue metrics unavailable.'))
+        self.client.campaign_history_totals = MagicMock(side_effect=XcallyError('Queue metrics unavailable.'))
         self.client.campaign_recent_calls = MagicMock(return_value=[])
         result = self.client.campaign_monitor_snapshot(20)
         self.assertIsNone(result['realtime']['available'])
@@ -214,6 +214,47 @@ class CampaignTransportTests(unittest.TestCase):
         self.assertIn('None of this campaign', result['agents_error'])
         self.assertIsNone(result['call_totals']['answered'])
         self.assertEqual(result['call_totals_error'], 'Queue metrics unavailable.')
+
+    def test_history_totals_match_report_states_and_scope_to_today(self):
+        now = datetime(2026, 10, 27, 13, 0, tzinfo=timezone.utc)
+        states = ['Abandoned', 'Answer', 'Blacklist', 'Busy', 'Congestion', 'Drop',
+                  'HangupInAMD', 'Machine', 'NoAnswer', 'NoSuchNumber', 'OriginateError', 'Answer']
+        rows = [{'id': i, 'VoiceQueueId': 20, 'statedesc': state, 'createdAt': '2026-10-27T10:00:00Z'}
+                for i, state in enumerate(states, 1)]
+        rows.append({'id': 99, 'VoiceQueueId': 20, 'statedesc': 'Answer', 'createdAt': '2026-10-26T23:59:59Z'})
+        response = MagicMock(ok=True)
+        response.json.return_value = {'count': len(rows), 'rows': rows}
+        self.client.request = MagicMock(return_value=response)
+        self.assertEqual(self.client.campaign_history_totals(20, now), {'answered': 2, 'total': 12, 'abandoned': 1})
+        self.assertEqual(self.client.request.call_args.args, ('GET', '/voice/queues/20/hopper_histories'))
+
+    def test_history_totals_paginate_and_count_retries_as_separate_rows(self):
+        now = datetime(2026, 10, 27, 13, 0, tzinfo=timezone.utc)
+        row = {'id': 2, 'VoiceQueueId': 20, 'statedesc': 'Answer', 'createdAt': '2026-10-27T10:00:00Z'}
+        responses = []
+        for rows in ([row], [{**row, 'id': 1, 'statedesc': 'Busy'}]):
+            response = MagicMock(ok=True)
+            response.json.return_value = {'count': 2, 'rows': rows}
+            responses.append(response)
+        self.client.request = MagicMock(side_effect=responses)
+        self.assertEqual(self.client.campaign_history_totals(20, now), {'answered': 1, 'total': 2, 'abandoned': 0})
+        self.assertEqual(self.client.request.call_args.kwargs['params']['offset'], 1)
+
+    def test_history_totals_fail_instead_of_showing_partial_or_wrong_counts(self):
+        now = datetime(2026, 10, 27, 13, 0, tzinfo=timezone.utc)
+        row = {'id': 1, 'VoiceQueueId': 20, 'statedesc': 'Answer', 'createdAt': '2026-10-27T10:00:00Z'}
+        for invalid in ({**row, 'VoiceQueueId': 21}, {**row, 'id': None},
+                        {**row, 'createdAt': 'bad'}, {**row, 'statedesc': None}):
+            response = MagicMock(ok=True)
+            response.json.return_value = {'count': 1, 'rows': [invalid]}
+            self.client.request = MagicMock(return_value=response)
+            with self.assertRaises(XcallyError):
+                self.client.campaign_history_totals(20, now)
+        response.json.return_value = {'count': 10, 'rows': [row]}
+        with self.assertRaisesRegex(XcallyError, 'pagination'):
+            self.client.campaign_history_totals(20, now)
+        response.json.return_value = {'count': 0, 'rows': []}
+        self.assertEqual(self.client.campaign_history_totals(20, now), {'answered': 0, 'total': 0, 'abandoned': 0})
 
     def test_realtime_queue_totals_match_selected_campaign(self):
         response = MagicMock()
