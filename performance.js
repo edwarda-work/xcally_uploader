@@ -39,6 +39,11 @@
 
   function renderDetail(campaign) {
     const realtime = campaign.realtime || {};
+    const callTotals = campaign.call_totals || {};
+    const answered = callTotals.answered, total = callTotals.total;
+    const validCount = value => Number.isSafeInteger(value) && value >= 0;
+    const answerRate = validCount(answered) && validCount(total) && total > 0 && answered <= total
+      ? `${(answered / total * 100).toFixed(1)}%` : null;
     const calls = campaign.recent_calls || [];
     const callRows = calls.map(call => `<tr><td>${cell(call.status)}</td><td>${cell(formatTime(call.started_at))}</td><td>${cell(formatTime(call.ended_at))}</td></tr>`).join('');
     $('performance-detail').innerHTML = `<div class="card"><h2>${escapeHtml(campaign.name)}</h2>
@@ -49,10 +54,17 @@
       <div class="stats"><div class="stat"><div class="stat-label">Agents logged in</div><div class="stat-value">${cell(realtime.logged_in)}</div></div>
       <div class="stat"><div class="stat-label">Agents talking</div><div class="stat-value">${cell(realtime.talking)}</div></div>
       <div class="stat"><div class="stat-label">Linked contact lists</div><div class="stat-value">${cell(campaign.list_count)}</div></div></div>
+      <h3>Campaign call totals — Today (Africa/Accra)</h3>
+      ${campaign.call_totals_error ? `<div class="notice">${escapeHtml(campaign.call_totals_error)}</div>` : ''}
+      <div class="stats"><div class="stat"><div class="stat-label">Total answered</div><div class="stat-value">${cell(callTotals.answered)}</div></div>
+      <div class="stat"><div class="stat-label">Total calls</div><div class="stat-value">${cell(callTotals.total)}</div></div>
+      <div class="stat"><div class="stat-label">Abandoned</div><div class="stat-value">${cell(callTotals.abandoned)}</div></div>
+      <div class="stat"><div class="stat-label">Answer rate</div><div class="stat-value">${cell(answerRate)}</div></div></div>
+      <p class="monitor-note">Answer rate = Answer history entries ÷ all history entries × 100, from midnight today to this check (Africa/Accra). Retries count separately. A dash means the data is unavailable or no calls have been recorded.</p>
       <p><strong>Assigned agents:</strong> ${cell(campaign.agents?.length)}</p>
       <button id="performance-view-agents" class="button button-secondary">View agent status</button>
       <h3>Recent calls</h3>${campaign.calls_error ? `<p class="monitor-note">${escapeHtml(campaign.calls_error)}</p>` : callRows ? `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Started</th><th>Ended</th></tr></thead><tbody>${callRows}</tbody></table></div>` : '<p class="monitor-note">No call history returned for this campaign.</p>'}
-      <p class="monitor-note">Agent counts are calculated from assigned agents’ current voice statuses. Recent calls show the latest 10 history entries returned by xCALLY.</p></div>`;
+      <p class="monitor-note">Call totals use the selected campaign’s Hopper History, matching the Calls Summary report’s counting method. Agent counts show current voice status. Recent calls show the latest 10 history entries.</p></div>`;
     $('performance-view-agents').addEventListener('click', () => {
       window.agentUI?.openCampaign(campaign.id, $('performance-username').value, $('performance-password').value);
     });

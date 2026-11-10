@@ -92,6 +92,7 @@
   }
 
   function updateActions() {
+    window.campaignControls?.refresh();
     const reason = disabledReason();
     const createButton = $('campaign-create');
     createButton.disabled = Boolean(reason);
@@ -176,6 +177,12 @@
 
   // Consumed by index.html's CSV preview code.
   window.campaignUI = {
+    relatedCampaignIds() {
+      return [...new Set((splitState.data?.segments || []).flatMap(segment => {
+        const matches = matchingCampaigns(state.assignments.get(segment.agent));
+        return matches.length === 1 ? [matches[0].id] : [];
+      }))];
+    },
     previewStarted() {
       if (!state.busy) state.assignments.clear();
       renderMatches();

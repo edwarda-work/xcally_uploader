@@ -2,6 +2,35 @@
 
 A market-aware automation service for validating CSV contact lists and uploading them to xCALLY. Market is local metadata only: it selects the list-name prefix and trusted custom-field schema. It is not sent to xCALLY.
 
+## Windows executable
+
+The desktop build bundles Python and the application into `XcallyUploads.exe`.
+End users do not need VS Code, Python, or a terminal. Double-click the executable;
+it opens the application in the default browser. Keep the launcher window open
+while working. After uploads and campaign updates finish, click **Stop application**.
+Closing the browser alone does not stop the server. Only one instance can run on
+the machine at a time (localhost port 8765).
+
+History and campaign records persist in `%LOCALAPPDATA%\XcallyUploads`, independently
+of the executable. Existing development history is not included in the build.
+Users can enter their xCALLY credentials in the interface. Optional server settings
+can be placed in `%LOCALAPPDATA%\XcallyUploads\.env`; credentials are never bundled.
+The app still requires network access to xCALLY.
+
+To build on a Windows machine, install 64-bit Python 3.13 with its Python launcher,
+then run `powershell -ExecutionPolicy Bypass -File .\build-windows.ps1` from this
+project. The build machine needs internet access to download dependencies.
+Distribute `dist\XcallyUploads.exe` to users.
+Alternatively, push the project to GitHub and run **Build Windows executable** from
+the Actions tab, then download the `XcallyUploads-Windows-x64` artifact.
+The workflow is manual; adding it does not automatically run or publish anything.
+
+Builds must run on Windows; the macOS development machine cannot produce the Windows
+binary with PyInstaller. Before distributing a build, test it on a Windows machine
+without Python: launch it, sign in, load campaigns, run a small upload, restart,
+and confirm history persists. The executable is unsigned, so Windows may display
+an unknown-publisher warning.
+
 ## Split by agent
 
 The **Split by agent** tab uploads one replacement list per agent to an existing
@@ -46,7 +75,56 @@ submission use multipart credentials or configured server credentials. Submissio
 accepts `file`, `market`, `agent_column`, `assignments` (JSON mapping CSV names to
 agent IDs), `batch_id` (UUID), and optional `base_name`.
 
+## Additional phones and list readiness
+
+`DISBURSEMENT_WALLET`, `WALLET_1`, and `WALLET_2` are imported as xCALLY Additional
+phones (contact item types Disbursement Wallet, Margin Number 1, and Margin Number 2),
+keyed by item type name exactly as the xCALLY import screen does. `MARGIN_PHONENUMBER1/2`
+are not uploaded. xCALLY keeps each number once per contact. Files whose phone columns
+contain Excel scientific notation (for example `2.33553E+11`), or two columns targeting
+the same field, are rejected before anything is written to xCALLY.
+
+xCALLY imports in the background: contacts first, then Additional phones. After an upload
+the Upload tab checks the list every 15 seconds and shows when it is ready to add to a
+campaign; History has a **Check** button per list (`POST /api/uploads/{list_id}/readiness`,
+read only). Phones are verified on up to five sample contacts from the end of the file.
+Their main phone numbers are held in memory only, so after an app restart only the
+contact count can be checked. Multi Campaigns waits for the sample phones before
+swapping campaign lists (`XCALLY_PHONE_WAIT_SECONDS`, default 180); if they are not
+confirmed, the campaign is left unchanged.
+
 ## Campaign performance
+
+Each selected campaign shows today's **Total answered**, **Total calls**,
+**Abandoned**, and **Answer rate**. Totals count Hopper History rows for that queue
+whose `createdAt` falls between midnight in Africa/Accra and the time of the check.
+This follows the exported Calls Summary report's `COUNT(id)` method: `Answer`
+and `Abandoned` outcomes contribute to their respective counters; all outcomes
+contribute to total calls, including retries and non-dialable outcomes such as
+Blacklist. This is a history-entry rate, not a unique-contact or final-record rate.
+Answer rate is answered divided by total, displayed with one decimal place.
+Missing data or zero total displays a dash for the rate. A successful empty
+history scan displays zero counts. Invalid, incorrectly scoped, unsorted, or
+incomplete history scans display an error instead of partial totals.
+History is paged newest first up to 1,000 pages; totals may take time for busy
+campaigns. Nothing is created or modified in Analytics. Compare live results with
+a campaign-scoped report using the same `createdAt` reporting window.
+
+The **Multi Campaigns** tab includes **Turn campaigns ON or OFF**. Enter credentials
+above, load campaign status, then use individual ON/OFF buttons or select several
+campaigns (including Select all matching campaigns) and use **Turn selected ON/OFF**.
+Search by campaign name or choose **Agents in current CSV** to show campaigns
+matched to the current file’s confirmed agent assignments and selected market.
+The search view starts empty until a name is entered. Search also narrows the
+agent view. Hidden campaigns are removed from the selection when filters change.
+Confirm the named
+campaigns before applying. ON enables dialing; OFF pauses dialing and may leave
+calls already in progress running. Each result is verified separately; failures
+do not undo successful changes. A bulk request processes up to 100 campaigns in
+sequence. Campaigns undergoing list replacement cannot be changed by these controls.
+If a connection fails, reload status before retrying. Status is a last-checked
+snapshot; reload after list replacements or changes made elsewhere in xCALLY.
+The Windows executable must be rebuilt to include these controls.
 
 The Campaign Performance tab loads only active outbound campaign names once when opened.
 After an operator selects a campaign and clicks **Check campaign**, it reads
@@ -54,8 +132,9 @@ that campaign's active state, assigned users, linked contact-list count, and
 current agent data. Realtime agents are matched to the selected campaign's
 assigned agent IDs. Available, logged-in, talking, and ringing counts are
 calculated from `/api/realtime/agents` with the voice-channel filter. The
-campaign page no longer requests realtime queue data. If assigned-agent status
-is incomplete, affected counts remain unavailable instead of showing zero.
+campaign page reads `/voice/queues/{id}/hopper_histories` for call totals,
+because realtime queue counters may be null. If a data source is unavailable,
+its affected figures show a dash instead of zero.
 **Load campaigns** refreshes the names; **Check campaign** becomes **Refresh
 campaign** after the first read and updates only the selected campaign. Its backend
 uses `POST /api/performance/campaigns` and
@@ -64,8 +143,7 @@ campaign options route. These calls are read only.
 
 The selected campaign's latest ten Hopper History entries show only status,
 start time, and end time. The app requests `VoiceQueueId` in the response and
-rejects rows for a different campaign. Hopper counts remain unavailable until
-their reporting request is verified. Agent voice states are current activity,
+rejects rows for a different campaign. Agent voice states are current activity,
 not a historical call rate; the tab does not treat a missing measurement as zero.
 
 The Agent Performance tab separately reads assigned agents and their current
@@ -73,8 +151,23 @@ voice status for one active campaign. It uses
 `POST /api/performance/campaigns/{id}/agents` only when an operator checks or
 refreshes that campaign. The status filter works on the loaded agents without
 another xCALLY request. Campaign Performance links to this tab; the campaign
-snapshot does not fetch agent presence. Agent call rates and rankings are not
-shown until per-agent call attribution and a time range are verified.
+snapshot does not fetch agent presence. Rankings and rates across selectable
+periods are not shown.
+
+The Agent Performance table shows answered calls handled by each assigned
+agent for each hour from 07:00 to 19:00 today in Africa/Accra, plus today's
+total. The current hour is marked in progress and can be refreshed manually;
+completed hours remain visible. Assigned agents are shown 25 per page after
+status filtering and a name or ID search. Filtering and page navigation use
+loaded data without another xCALLY request. The
+hourly scan streams updated counts after
+each 250-row Hopper History page. The table marks counts as partial until the
+scan finishes and shows how many records have been checked. Hopper History rows are
+counted only when they have a matching `UserId`, `statedesc=Answer`, and a
+history timestamp inside that hour. Unanswered dial attempts are excluded
+because the provided history has no agent ID for them. The page requests the
+count on first check, when manually refreshed, and at the next hour boundary
+while open. Status filtering uses the loaded counts without another request.
 
 ## Supported markets
 

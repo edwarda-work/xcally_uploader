@@ -1,0 +1,20 @@
+name: Build Windows executable
+on:
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - name: Build standalone executable
+        shell: pwsh
+        run: ./build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XcallyUploads-Windows-x64
+          path: dist/XcallyUploads.exe
+          if-no-files-found: error
