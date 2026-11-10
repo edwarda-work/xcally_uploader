@@ -29,6 +29,7 @@ class Settings:
     max_upload_bytes: int
     history_limit: int
     import_wait_seconds: int = 60
+    phone_wait_seconds: int = 180
 
     @classmethod
     def from_environment(cls, project_dir: Path) -> "Settings":
@@ -47,4 +48,5 @@ class Settings:
             max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(60 * 1024 * 1024))),
             history_limit=int(os.getenv("HISTORY_LIMIT", "500")),
             import_wait_seconds=max(1, int(os.getenv("XCALLY_IMPORT_WAIT_SECONDS", "60"))),
+            phone_wait_seconds=max(1, int(os.getenv("XCALLY_PHONE_WAIT_SECONDS", "180"))),
         )

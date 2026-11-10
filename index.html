@@ -91,9 +91,16 @@
     .monitor-row:hover,.monitor-row:focus { background:#fff8fb; }
     .monitor-row.selected { background:#fff0f7; }
     .monitor-note { color:var(--muted); font-size:13px; line-height:1.5; }
+    .agent-pages { display:flex; align-items:center; justify-content:flex-end; gap:12px; margin-top:12px; font-size:13px; }
     .monitor-detail { margin-top:18px; }
     .notice details { margin-top:8px; overflow-wrap:anywhere; }
     .preview-error { color:var(--danger); margin:12px 0; }
+    .readiness { margin-top:4px; font-size:12px; font-weight:700; }
+    .readiness.ready { color:var(--success); }
+    .readiness.waiting { color:#694b00; }
+    .readiness.error { color:var(--danger); }
+    .button.small { padding:6px 10px; font-size:12px; }
+    .history-ready { white-space:normal; min-width:220px; }
     .split-fields { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
     .split-fields input[type="file"] { width:100%; }
     .split-preview { margin-top:20px; }
@@ -130,7 +137,7 @@
       <div class="actions"><button id="upload-button" class="button button-primary" disabled>Upload files</button><button id="clear-button" class="button button-secondary">Clear</button><span id="count" class="count"></span></div>
     </section>
     <section id="split" class="tab">
-      <h1>Bulk Compaigns</h1>
+      <h1>Bulk Campaigns</h1>
       <p class="lead">Split one contact file into agent lists and replace the lists in their existing campaigns.</p>
       <div class="notice">Existing campaigns are matched by agent username. Previous lists are detached and remain in Contacts Manager.</div>
       <div class="card">
@@ -169,6 +176,18 @@
         <div id="campaign-results" aria-live="polite"></div>
         <button id="campaign-refresh" class="button button-secondary" hidden>Check batch status</button>
       </div>
+      <div class="card">
+        <p class="section-title">4. Turn campaigns ON or OFF</p>
+        <p class="help">Search by campaign name, or show campaigns matched to agents in your current CSV and selected market. Confirm agent assignments above first. ON enables dialing; OFF pauses dialing. Calls in progress may continue.</p>
+        <div class="split-fields">
+          <label class="field"><span>Find campaigns</span><select id="control-scope"><option value="search">Search campaign names</option><option value="agents">Agents in current CSV</option></select></label>
+          <label class="field"><span>Campaign name</span><input id="control-search" type="search" placeholder="Type part of a campaign name" autocomplete="off"></label>
+        </div>
+        <div class="actions"><button id="control-load" class="button button-secondary">Load campaign status</button><button id="control-on" class="button button-primary" disabled>Turn selected ON</button><button id="control-off" class="button button-secondary" disabled>Turn selected OFF</button></div>
+        <p id="control-message" class="help" role="status" aria-live="polite">Load campaigns to check their current status.</p>
+        <p id="control-count" class="help" role="status"></p>
+        <div id="control-campaigns" class="table-wrap"></div>
+      </div>
     </section>
     <section id="performance" class="tab">
       <h1>Campaign performance</h1><p class="lead">Select an active outbound campaign to check its current state.</p>
@@ -186,7 +205,7 @@
       <div id="performance-detail" class="monitor-detail" aria-live="polite"></div>
     </section>
     <section id="agents" class="tab">
-      <h1>Agent performance</h1><p class="lead">Check the current voice status of agents assigned to an active campaign.</p>
+      <h1>Agent performance</h1><p class="lead">Check assigned agents’ current voice status and answered calls by hour today.</p>
       <div class="card">
         <div class="monitor-controls">
           <label class="field"><span>xCALLY username</span><input id="agents-username" autocomplete="username" placeholder="Use server credentials or enter username"></label>
@@ -197,7 +216,7 @@
         <div id="agents-error" class="preview-error" role="alert"></div>
         <p id="agents-updated" class="monitor-note" aria-live="polite"></p>
       </div>
-      <div class="card"><div class="monitor-controls"><label class="field"><span>Campaign</span><select id="agents-campaign"><option value="">Select a campaign</option></select></label><button id="agents-check" class="button button-primary" disabled>Check agents</button></div></div>
+      <div class="card"><div class="monitor-controls"><label class="field"><span>Campaign</span><select id="agents-campaign"><option value="">Select a campaign</option></select></label><label class="field"><span>Search agents</span><input id="agents-search" type="search" placeholder="Name or agent ID" autocomplete="off" disabled></label><button id="agents-check" class="button button-primary" disabled>Check agents</button></div></div>
       <div id="agents-detail" class="monitor-detail" aria-live="polite"></div>
     </section>
     <section id="history" class="tab">
@@ -270,7 +289,8 @@
     function renderQueue() {
       $('queue').innerHTML = state.files.map(item => {
         const detail = item.result ? (item.result.status === 'success' ? `List ${item.result.list_id}${item.result.skipped_headers?.length ? ` · ${item.result.skipped_headers.length} skipped fields` : ''}` : item.result.message) : formatSize(item.file.size);
-        return `<div class="file-row"><div><div class="file-name" title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</div><div class="file-detail">${escapeHtml(detail)}</div></div><span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span><button class="remove" data-remove="${escapeHtml(item.id)}" aria-label="Remove file">✕</button></div>`;
+        const ready = item.readiness ? `<div class="readiness ${readinessClass(item.readiness)}" aria-live="polite">${escapeHtml(readinessText(item.readiness))}</div>` : '';
+        return `<div class="file-row"><div><div class="file-name" title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</div><div class="file-detail">${escapeHtml(detail)}</div>${ready}</div><span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span><button class="remove" data-remove="${escapeHtml(item.id)}" aria-label="Remove file">✕</button></div>`;
       }).join('');
       document.querySelectorAll('[data-remove]').forEach(button => button.addEventListener('click', () => { if (!state.uploading) { state.files = state.files.filter(item => item.id !== button.dataset.remove); renderQueue(); } }));
       $('count').textContent = state.files.length ? `${state.files.length} file${state.files.length === 1 ? '' : 's'} queued` : '';
@@ -279,6 +299,40 @@
     function updateActions() { $('upload-button').disabled = state.uploading || !state.files.some(item => item.status === 'pending') || !selectedMarket(); }
     ['username', 'password'].forEach(id => $(id).addEventListener('input', () => { updateCredentialStatus(); updateActions(); }));
     $('clear-button').addEventListener('click', () => { if (!state.uploading) { state.files = []; renderQueue(); } });
+
+    // Readiness: xCALLY adds contacts first and Additional phones shortly after.
+    const READINESS_INTERVAL_MS = 15000, READINESS_LIMIT_MS = 30 * 60 * 1000;
+    function readinessClass(r) { return r.ready === true ? 'ready' : r.stage === 'error' ? 'error' : 'waiting'; }
+    function readinessText(r) {
+      if (r.ready === true) return `✓ ${r.message}${r.elapsed != null ? ` Took ${formatElapsed(r.elapsed)} after upload.` : ''} You can add it to a campaign.`;
+      if (r.stage === 'error' || r.stage === 'unknown') return r.message;
+      return `⏳ ${r.message} Don't add it to a campaign yet. Checking every 15 seconds…`;
+    }
+    function formatElapsed(seconds) { return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)} min ${seconds % 60}s`; }
+    async function checkReadiness(listId, expected) {
+      const form = new FormData();
+      if (expected != null) form.append('expected_contacts', expected);
+      if ($('username').value.trim() && $('password').value) { form.append('username', $('username').value.trim()); form.append('password', $('password').value); }
+      const response = await fetch(`/api/uploads/${encodeURIComponent(listId)}/readiness`, { method: 'POST', body: form });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : 'Unable to check list status.');
+      return data;
+    }
+    function watchReadiness(item) {
+      const started = Date.now();
+      item.readiness = { stage: 'contacts', message: 'Checking import status…' };
+      const tick = async () => {
+        if (!state.files.includes(item)) return;
+        try { item.readiness = await checkReadiness(item.result.list_id, item.result.readiness?.expected_contacts); }
+        catch (error) { item.readiness = { stage: 'error', ready: false, message: `${error.message} Retrying…` }; }
+        if (item.readiness.ready === true) item.readiness.elapsed = Math.round((Date.now() - started) / 1000);
+        renderQueue();
+        const done = item.readiness.ready === true || item.readiness.stage === 'unknown';
+        if (!done && Date.now() - started < READINESS_LIMIT_MS) setTimeout(tick, READINESS_INTERVAL_MS);
+        else if (!done) { item.readiness = { stage: 'error', message: 'Still not ready after 30 minutes. Check the list in xCALLY before adding it to a campaign.' }; renderQueue(); }
+      };
+      tick();
+    }
 
     $('upload-button').addEventListener('click', async () => {
       const pending = state.files.filter(item => item.status === 'pending');
@@ -295,6 +349,7 @@
         const response = await fetch('/api/uploads', { method:'POST', body:form }); const data = await response.json();
         if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Upload request failed.');
         pending.forEach((item, index) => { const result = data.results?.[index]; item.result = result || {status:'failed',message:'No result returned.'}; item.status = item.result.status; });
+        pending.filter(item => item.status === 'success' && item.result.list_id).forEach(watchReadiness);
       } catch (error) { pending.forEach(item => { item.status='failed'; item.result={status:'failed',message:error.message}; }); }
       finally {
         state.uploading=false;
@@ -312,7 +367,17 @@
         const success = rows.filter(row => row.status === 'success').length;
         $('stats').innerHTML = `<div class="stat"><div class="stat-label">Total uploads</div><div class="stat-value">${rows.length}</div></div><div class="stat"><div class="stat-label">Successful</div><div class="stat-value">${success}</div></div><div class="stat"><div class="stat-label">Failed</div><div class="stat-value">${rows.length-success}</div></div>`;
         if (!rows.length) { $('history-content').innerHTML='<div class="empty">No upload history found.</div>'; return; }
-        $('history-content').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Market</th><th>File</th><th>Status</th><th>List</th><th>Campaign</th><th>Agent</th><th>PID</th><th>Timestamp</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.market || 'Legacy')}</strong></td><td title="${escapeHtml(row.file_name)}">${escapeHtml(row.file_name)}</td><td><span class="badge ${escapeHtml(row.status)}">${escapeHtml(row.status)}</span></td><td>${escapeHtml(row.list_id || '—')}</td><td>${escapeHtml(row.campaign_id || '—')}</td><td>${escapeHtml(row.agent_name || '—')}</td><td>${escapeHtml(row.pid || '—')}</td><td>${escapeHtml(row.timestamp || '—')}</td></tr>`).join('')}</tbody></table></div>`;
+        $('history-content').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Market</th><th>File</th><th>Status</th><th>List</th><th>Campaign</th><th>Agent</th><th>PID</th><th>Timestamp</th><th>Ready for campaign?</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.market || 'Legacy')}</strong></td><td title="${escapeHtml(row.file_name)}">${escapeHtml(row.file_name)}</td><td><span class="badge ${escapeHtml(row.status)}">${escapeHtml(row.status)}</span></td><td>${escapeHtml(row.list_id || '—')}</td><td>${escapeHtml(row.campaign_id || '—')}</td><td>${escapeHtml(row.agent_name || '—')}</td><td>${escapeHtml(row.pid || '—')}</td><td>${escapeHtml(row.timestamp || '—')}</td><td class="history-ready">${row.status === 'success' && row.list_id ? `<button class="button button-secondary small" data-ready-list="${escapeHtml(row.list_id)}" data-expected="${escapeHtml(row.readiness?.expected_contacts ?? '')}">Check</button>` : '—'}</td></tr>`).join('')}</tbody></table></div>`;
+        document.querySelectorAll('[data-ready-list]').forEach(button => button.addEventListener('click', async () => {
+          const cell = button.parentElement;
+          button.disabled = true; button.textContent = 'Checking…';
+          try {
+            const r = await checkReadiness(button.dataset.readyList, button.dataset.expected === '' ? null : button.dataset.expected);
+            cell.innerHTML = `<div class="readiness ${readinessClass(r)}">${escapeHtml(r.ready === true ? `✓ ${r.message}` : r.message)}</div>`;
+          } catch (error) {
+            cell.innerHTML = `<div class="readiness error">${escapeHtml(error.message)}</div>`;
+          }
+        }));
       } catch { $('history-content').innerHTML='<div class="empty">Unable to load history.</div>'; }
     }
     $('history-filter').addEventListener('change', loadHistory);
@@ -380,8 +445,9 @@
     });
     initialize();
   </script>
-  <script src="/campaigns.js?v=20260915-2"></script>
-  <script src="/performance.js?v=20261001-9"></script>
-  <script src="/agents.js?v=20261001-2"></script>
+  <script src="/campaigns.js?v=20261019-2"></script>
+  <script src="/campaign-controls.js?v=20261019-2"></script>
+  <script src="/performance.js?v=20261027-2"></script>
+  <script src="/agents.js?v=20261007-1"></script>
 </body>
 </html>

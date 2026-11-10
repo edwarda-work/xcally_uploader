@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-function page() {
+function page(callTotals = {answered: 604, total: 674, abandoned: 290}) {
   const elements = new Map();
   const $ = id => {
     if (!elements.has(id)) elements.set(id, {
@@ -19,6 +19,7 @@ function page() {
       ? {campaigns: [{id: 1, name: 'First'}, {id: 2, name: 'Second'}]}
       : {id: Number(url.split('/').at(-1)), name: 'First', active: true, agents: [], list_count: 1,
         realtime: {logged_in: 2, available: 1, talking: 1, ringing: 0},
+        call_totals: callTotals,
         recent_calls: [{status: 'Answer', started_at: '2026-10-01T10:04:17Z', ended_at: '2026-10-01T10:05:11Z'}]};
     return {ok: true, json: async () => data};
   };
@@ -42,7 +43,32 @@ test('opening loads only names and checks only the chosen campaign', async () =>
   assert.equal(p.$('performance-check').textContent, 'Refresh campaign');
   assert.match(p.$('performance-detail').innerHTML, /Answer/);
   assert.match(p.$('performance-detail').innerHTML, /Agents ringing/);
+  assert.match(p.$('performance-detail').innerHTML, /Total answered<\/div><div class="stat-value">604/);
+  assert.match(p.$('performance-detail').innerHTML, /Total calls<\/div><div class="stat-value">674/);
+  assert.match(p.$('performance-detail').innerHTML, /Abandoned<\/div><div class="stat-value">290/);
+  assert.match(p.$('performance-detail').innerHTML, /Answer rate<\/div><div class="stat-value">89\.6%/);
   assert.doesNotMatch(p.$('performance-detail').innerHTML, /Calls originating now/);
   await p.$('performance-check').listeners.click();
   assert.deepEqual(p.calls, ['/api/performance/campaigns', '/api/performance/campaigns/2', '/api/performance/campaigns/2']);
+});
+
+test('answer rate preserves zero answered and rejects unavailable or inconsistent counters', async () => {
+  for (const [totals, expected] of [
+    [{answered: 0, total: 10}, '0.0%'],
+    [{answered: 10, total: 10}, '100.0%'],
+    [{answered: null, total: 10}, '—'],
+    [{answered: 1, total: null}, '—'],
+    [{answered: 0, total: 0}, '—'],
+    [{answered: 11, total: 10}, '—'],
+    [{answered: '6', total: 10}, '—'],
+    [{answered: -1, total: 10}, '—'],
+  ]) {
+    const p = page(totals);
+    p.ui.opened();
+    await new Promise(resolve => setImmediate(resolve));
+    p.$('performance-campaign').value = '1';
+    p.$('performance-campaign').listeners.change();
+    await p.$('performance-check').listeners.click();
+    assert.ok(p.$('performance-detail').innerHTML.includes(`Answer rate</div><div class="stat-value">${expected}</div>`), JSON.stringify(totals));
+  }
 });

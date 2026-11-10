@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import csv
+import math
+import re
 import time
 import unicodedata
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.auth import HTTPBasicAuth
 from urllib3.exceptions import InsecureRequestWarning
 
-from .domain import MarketConfig
+from .domain import PHONE_HEADERS, MarketConfig
 from .settings import Settings
 
 
@@ -51,9 +55,63 @@ def read_headers(csv_path: Path) -> list[str]:
     return cleaned
 
 
+SCIENTIFIC_NUMBER = re.compile(r"^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$")
+
+
+def phone_value_error(header: str, value: str, line: int) -> str | None:
+    """Explain a phone value that Excel shortened to scientific notation."""
+    if header in PHONE_HEADERS and SCIENTIFIC_NUMBER.match(value.strip()):
+        return (f"{header} at CSV line {line} is in scientific notation ({value.strip()}), so digits are lost. "
+                "In Excel, format the phone columns as Number with 0 decimals or as Text, then save the CSV again.")
+    return None
+
+
+def validate_phone_columns(csv_path: Path) -> None:
+    """Reject the file before any xCALLY write if a phone column was shortened by Excel."""
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.reader(handle)
+            headers = [header.strip() for header in next(reader, [])]
+            phone_columns = [(index, header) for index, header in enumerate(headers) if header in PHONE_HEADERS]
+            if not phone_columns:
+                return
+            for row in reader:
+                for index, header in phone_columns:
+                    if index < len(row):
+                        error = phone_value_error(header, row[index], reader.line_num)
+                        if error:
+                            raise ValueError(error)
+    except UnicodeDecodeError as exc:
+        raise ValueError("CSV must use UTF-8 encoding.") from exc
+
+
+def check_column_targets(headers: Iterable[str], market: MarketConfig) -> None:
+    """Before any xCALLY write, reject two CSV columns that fill the same field."""
+    owners: dict[str, str] = {}
+    for header in headers:
+        if not header or header not in market.allowed_headers:
+            continue
+        if header in market.additional_phone_bindings:
+            target = "additional_phone:" + normalize_alias(market.additional_phone_bindings[header])
+        else:
+            target = market.direct_bindings.get(header) or normalize_alias(market.alias_overrides.get(header, header))
+        if target in owners:
+            raise ValueError(f"{owners[target]} and {header} both map to the same xCALLY field. Remove one of these columns.")
+        owners[target] = header
+
+
 def build_binding(
-    headers: Iterable[str], field_rows: Iterable[dict[str, Any]], market: MarketConfig
+    headers: Iterable[str], field_rows: Iterable[dict[str, Any]], market: MarketConfig,
+    item_types: Iterable[dict[str, Any]] = (),
 ) -> tuple[dict[str, str], list[str]]:
+    """Map CSV headers to the xCALLY import binding.
+
+    Contact fields use their own key (phone), custom fields use cf_<id>, and
+    additional phones use the contact item type's exact name, as the xCALLY
+    import screen does.
+    """
+    item_type_names = {normalize_alias(row["name"]): row["name"]
+                       for row in item_types if isinstance(row.get("name"), str) and row["name"].strip()}
     alias_to_field_id: dict[str, int] = {}
     for row in field_rows:
         alias = row.get("alias") or row.get("name")
@@ -63,6 +121,12 @@ def build_binding(
 
     binding: dict[str, str] = {}
     skipped: list[str] = []
+
+    def bind(target: str, header: str) -> None:
+        if binding.get(target, header) != header:
+            raise ValueError(f"{binding[target]} and {header} both map to the same xCALLY field. Remove one of these columns.")
+        binding[target] = header
+
     for header in headers:
         if not header:
             continue
@@ -70,7 +134,14 @@ def build_binding(
             skipped.append(header)
             continue
         if header in market.direct_bindings:
-            binding[market.direct_bindings[header]] = header
+            bind(market.direct_bindings[header], header)
+            continue
+        if header in market.additional_phone_bindings:
+            name = item_type_names.get(normalize_alias(market.additional_phone_bindings[header]))
+            if name is None:
+                skipped.append(header)
+            else:
+                bind(name, header)
             continue
         candidates = []
         if header in market.alias_overrides:
@@ -80,7 +151,7 @@ def build_binding(
         if field_id is None:
             skipped.append(header)
         else:
-            binding[f"cf_{field_id}"] = header
+            bind(f"cf_{field_id}", header)
 
     for header, aliases in market.duplicate_alias_bindings.items():
         if header not in headers:
@@ -223,10 +294,118 @@ class XcallyClient:
             'ringing': sum(agent['online'] is True and agent['voice_status'] == 'ringing' for agent in snapshot['agents']) if known_voice else None,
         }
         try:
+            snapshot['call_totals'] = self.campaign_history_totals(queue_id)
+            snapshot['call_totals_source'] = 'hopper_history_today'
+        except XcallyError as exc:
+            snapshot['call_totals'] = {'answered': None, 'total': None, 'abandoned': None}
+            snapshot['call_totals_error'] = str(exc)
+        try:
             snapshot['recent_calls'] = self.campaign_recent_calls(queue_id)
         except XcallyError:
             snapshot['calls_error'] = 'xCALLY call history is unavailable.'
         return snapshot
+
+    def campaign_history_totals(self, queue_id: int, now: datetime | None = None) -> dict:
+        """Count history rows like Calls Summary, scoped to one queue and today.
+
+        A history row is the counting unit (COUNT(id)), including retries, rather
+        than a distinct contact or the final disposition in cm_hopper_final.
+        """
+        current = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo('Africa/Accra'))
+        start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        totals = {'answered': 0, 'total': 0, 'abandoned': 0}
+        seen: set[int] = set()
+        offset = 0
+        previous_time = None
+        for page in range(1, 1001):
+            response = self.request('GET', f'/voice/queues/{queue_id}/hopper_histories', params={
+                'VoiceQueueId': queue_id, 'fields': 'id,VoiceQueueId,statedesc,createdAt',
+                'limit': 250, 'offset': offset, 'page': page, 'sort': '-createdAt,-id',
+            })
+            if not response.ok:
+                raise XcallyError(f'Unable to read campaign totals from Hopper History (HTTP {response.status_code}).')
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid campaign history data.') from exc
+            rows = self.rows(data)
+            if not rows:
+                return totals
+            new_rows = 0
+            reached_previous_day = False
+            for row in rows:
+                if row.get('VoiceQueueId') != queue_id:
+                    raise XcallyError('xCALLY returned history totals for a different campaign.')
+                identity = row.get('id')
+                if type(identity) is not int:
+                    raise XcallyError('xCALLY omitted campaign history row IDs.')
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                new_rows += 1
+                try:
+                    stamp = datetime.fromisoformat(row['createdAt'].replace('Z', '+00:00'))
+                    if stamp.tzinfo is None:
+                        raise ValueError('Missing timezone')
+                except (KeyError, AttributeError, TypeError, ValueError) as exc:
+                    raise XcallyError('xCALLY returned a missing or invalid campaign history timestamp.') from exc
+                if previous_time is not None and stamp > previous_time:
+                    raise XcallyError('Campaign history was not sorted newest first. Totals could not be verified.')
+                previous_time = stamp
+                if stamp < start:
+                    reached_previous_day = True
+                    continue
+                if stamp > current:
+                    continue
+                state = row.get('statedesc')
+                if not isinstance(state, str) or not state.strip():
+                    raise XcallyError('xCALLY omitted a campaign history outcome.')
+                totals['total'] += 1
+                totals['answered'] += state == 'Answer'
+                totals['abandoned'] += state == 'Abandoned'
+            if not new_rows:
+                raise XcallyError('Campaign history pagination stopped advancing. Totals could not be verified.')
+            offset += len(rows)
+            count = data.get('count') if isinstance(data, dict) else None
+            if reached_previous_day or type(count) is int and offset >= count:
+                return totals
+        raise XcallyError('Campaign history exceeds the safe scan limit. Totals could not be verified.')
+
+    def campaign_realtime_totals(self, queue_id: int) -> dict:
+        """Read the selected outbound queue's counters from xCALLY realtime queues."""
+        offset = 0
+        seen: set[int] = set()
+        for _ in range(100):
+            response = self.request('GET', '/realtime/queues', params={
+                'channel': 'voice', 'type': 'outbound', 'limit': 250,
+                'offset': offset, 'sort': 'id',
+            })
+            if not response.ok:
+                raise XcallyError(f'Unable to read /realtime/queues (HTTP {response.status_code}).')
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid realtime queue data.') from exc
+            rows = self.rows(data)
+            for row in rows:
+                row_id = row.get('id')
+                if type(row_id) is not int:
+                    raise XcallyError('xCALLY omitted a realtime queue ID.')
+                if row_id in seen:
+                    continue
+                seen.add(row_id)
+                if row_id == queue_id:
+                    if row.get('type') not in ('outbound', None):
+                        raise XcallyError('xCALLY returned counters for a different queue type.')
+                    def counter(name):
+                        value = row.get(name)
+                        return int(value) if type(value) in (int, float) and math.isfinite(value) and value >= 0 and value == int(value) else None
+                    return {name: counter(name) for name in ('answered', 'total', 'abandoned')}
+            offset += len(rows)
+            count = data.get('count') if isinstance(data, dict) else None
+            if not rows or type(count) is int and offset >= count:
+                break
+        raise XcallyError('The selected campaign was not found in xCALLY realtime queues.')
 
     def campaign_agent_status(self, queue_id: int) -> dict:
         queue = self.queue(queue_id)
@@ -306,6 +485,148 @@ class XcallyClient:
             })
         return result
 
+    def campaign_hourly_answered(self, queue_id: int, now: datetime | None = None) -> dict:
+        """Return the completed hourly scan for callers that need one result."""
+        for result in self.iter_campaign_hourly_answered(queue_id, now):
+            pass
+        return result
+
+    def iter_campaign_hourly_answered(self, queue_id: int, now: datetime | None = None):
+        """Yield cumulative agent counts after each Hopper History page."""
+        queue = self.queue(queue_id)
+        if queue.get('type') != 'outbound':
+            raise XcallyError('The selected campaign is not outbound.')
+        assigned = self.collection(f'/voice/queues/{queue_id}/users')
+        agent_ids = {row['id'] for row in assigned}
+        current = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo('Africa/Accra'))
+        start = current.replace(hour=7, minute=0, second=0, microsecond=0)
+        close = current.replace(hour=19, minute=0, second=0, microsecond=0)
+        visible_end = min(close, current.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+        hours = []
+        boundary = start
+        while boundary < visible_end:
+            next_boundary = boundary + timedelta(hours=1)
+            hours.append({'start': boundary.isoformat(), 'end': next_boundary.isoformat(),
+                          'complete': current >= next_boundary,
+                          'counts': {agent_id: 0 for agent_id in agent_ids}})
+            boundary = next_boundary
+        result = {'period_start': start.isoformat(), 'period_end': close.isoformat(),
+                  'as_of': current.isoformat(), 'timezone': 'Africa/Accra',
+                  'hours': hours, 'totals': {agent_id: 0 for agent_id in agent_ids}}
+        if not agent_ids or not hours:
+            yield {**result, 'processed': 0, 'complete': True}
+            return
+        yield {**result, 'processed': 0, 'complete': False}
+        start_utc = start.astimezone(timezone.utc)
+        upper_utc = min(current, close).astimezone(timezone.utc)
+        seen_calls: set[str] = set()
+        seen_rows: set[tuple[str, int | str]] = set()
+        offset = 0
+        stalled_pages = 0
+        for page in range(1, 1001):
+            response = self.request('GET', f'/voice/queues/{queue_id}/hopper_histories', params={
+                'VoiceQueueId': queue_id,
+                'fields': 'id,VoiceQueueId,UserId,uniqueid,statedesc,createdAt',
+                'limit': 250, 'offset': offset, 'page': page, 'sort': '-createdAt',
+            })
+            if not response.ok:
+                raise XcallyError(f'Unable to read hourly campaign calls (HTTP {response.status_code}).')
+            try:
+                data = response.json()
+                rows = self.rows(data)
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid hourly call data.') from exc
+            if not rows:
+                break
+            page_has_today = False
+            new_rows = 0
+            for row in rows:
+                row_id = row.get('id')
+                unique_id = row.get('uniqueid')
+                if type(row_id) is int:
+                    identity = ('id', row_id)
+                elif isinstance(unique_id, str) and unique_id:
+                    identity = ('uniqueid', unique_id)
+                else:
+                    raise XcallyError('xCALLY omitted hourly call identifiers.')
+                if identity in seen_rows:
+                    continue
+                seen_rows.add(identity)
+                new_rows += 1
+                if row.get('VoiceQueueId') != queue_id:
+                    raise XcallyError('xCALLY returned hourly calls for a different campaign.')
+                stamp = row.get('createdAt')
+                if not isinstance(stamp, str):
+                    raise XcallyError('Hourly call time is missing from xCALLY.')
+                try:
+                    call_time = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+                except ValueError as exc:
+                    raise XcallyError('xCALLY returned an invalid hourly call time.') from exc
+                if call_time.tzinfo is None:
+                    raise XcallyError('xCALLY returned an hourly call time without a timezone.')
+                call_time = call_time.astimezone(timezone.utc)
+                if call_time < start_utc:
+                    continue
+                page_has_today = True
+                if call_time > upper_utc or row.get('statedesc') != 'Answer':
+                    continue
+                agent_id = row.get('UserId')
+                if agent_id not in result['totals']:
+                    continue
+                call_id = row.get('uniqueid') or row.get('id')
+                if call_id is None:
+                    raise XcallyError('xCALLY returned an answered call without an identifier.')
+                call_id = str(call_id)
+                if call_id not in seen_calls:
+                    seen_calls.add(call_id)
+                    hour_index = int((call_time - start_utc).total_seconds() // 3600)
+                    if 0 <= hour_index < len(hours):
+                        hours[hour_index]['counts'][agent_id] += 1
+                        result['totals'][agent_id] += 1
+            offset += len(rows)
+            yield {**result, 'processed': offset, 'complete': False}
+            stalled_pages = stalled_pages + 1 if new_rows == 0 else 0
+            if stalled_pages >= 2:
+                raise XcallyError('xCALLY hourly call pagination stopped advancing.')
+            if not page_has_today:
+                break
+            count = data.get('count') if isinstance(data, dict) else None
+            if type(count) is int and offset >= count:
+                break
+        else:
+            raise XcallyError('Hourly call history exceeds the safe scan limit.')
+        yield {**result, 'processed': offset, 'complete': True}
+
+    def contact_count(self, list_id: int) -> int:
+        """Contacts currently in a list, from the paginated contacts collection."""
+        response = self.request('GET', '/cm/contacts', params={'ListId': list_id, 'limit': 1, 'fields': 'id'})
+        if not response.ok:
+            raise XcallyError(f'Unable to count contacts in list {list_id} (HTTP {response.status_code}).')
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise XcallyError('xCALLY returned invalid contact data.') from exc
+        count = data.get('count') if isinstance(data, dict) else None
+        if count is None:
+            count = response.headers.get('Content-Range', '').rsplit('/', 1)[-1]
+        if isinstance(count, str) and count.isdigit():
+            count = int(count)
+        if type(count) is not int or count < 0:
+            raise XcallyError('Contact count could not be read from xCALLY.')
+        return count
+
+    def contacts_by_phone(self, list_id: int, phone: str) -> list[dict]:
+        data = self.json_request('GET', '/cm/contacts', params={'ListId': list_id, 'phone': phone, 'fields': 'id,phone,ListId', 'limit': 2})
+        rows = self.rows(data)
+        if any(row.get('ListId') not in (None, list_id) for row in rows):
+            raise XcallyError('xCALLY returned contacts from a different list.')
+        return rows
+
+    def contact_phones(self, contact_id: int) -> list[dict]:
+        """Additional phones of one contact (the endpoint the xCALLY contact screen uses)."""
+        data = self.json_request('GET', f'/cm/contacts/{contact_id}/phones')
+        return self.rows(data)
+
     def wait_for_import(self, list_id: int, expected_count: int) -> None:
         deadline = time.monotonic() + self.settings.import_wait_seconds
         while True:
@@ -346,6 +667,11 @@ class XcallyClient:
             )
         except requests.RequestException as exc:
             raise XcallyError("Unable to connect to xCALLY.") from exc
+
+    def contact_item_types(self) -> list[dict[str, Any]]:
+        """Additional phone types, e.g. Disbursement Wallet. Not in the Swagger spec; used by the web import screen."""
+        return [{"id": row.get("id"), "name": row.get("name")}
+                for row in self.collection("/contact_item_types", fields="id,name")]
 
     def create_list(self, list_name: str) -> dict[str, Any]:
         response = self.request("POST", "/cm/lists", json={"name": list_name})
