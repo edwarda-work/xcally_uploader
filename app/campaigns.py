@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .segmentation import preview_segments
-from .xcally import XcallyClient, XcallyError, build_binding
+from .readiness import bound_phone_headers, expected_profile, public_summary, registry, wait_for_phones
+from .xcally import XcallyClient, XcallyError, build_binding, check_column_targets, phone_value_error
 
 
 def campaign_for_agent(campaigns: list[dict], market_code: str, username: str) -> dict:
@@ -122,6 +123,7 @@ def run_batch(batch, contents, agent_column, assignments, base_name,
         contact_headers = [h for i, h in enumerate(headers) if i != agent_index]
         if 'MOBILE_PHONE' not in contact_headers:
             raise ValueError('MOBILE_PHONE is required for campaign contact lists.')
+        check_column_targets(contact_headers, market)
         batch['message'] = 'Uploading replacement lists for existing agent campaigns.'
         # Temporary CSVs are removed together, including on partial failures.
         with tempfile.TemporaryDirectory(prefix='xcally-segments-') as directory:
@@ -147,6 +149,10 @@ def run_batch(batch, contents, agent_column, assignments, base_name,
             for row in reader:
                 if not any(value.strip() for value in row):
                     continue
+                for index, header in enumerate(headers):
+                    error = index < len(row) and phone_value_error(header, row[index], reader.line_num)
+                    if error:
+                        raise ValueError(error)
                 if not row[headers.index('MOBILE_PHONE')].strip():
                     raise ValueError(f'MOBILE_PHONE is blank at CSV line {reader.line_num}.')
                 agent = row[agent_index].strip()
@@ -165,6 +171,7 @@ def run_batch(batch, contents, agent_column, assignments, base_name,
                 with paths[agent].open('a', encoding='utf-8', newline='') as handle:
                     csv.writer(handle).writerows(rows)
             repository.save(batch)
+            item_types = client.contact_item_types()
             for result in batch['results']:
                 def step(name):
                     result['step'] = name
@@ -177,8 +184,10 @@ def run_batch(batch, contents, agent_column, assignments, base_name,
                     step('creating_list')
                     result['list_id'] = int(client.create_list(result['list_name'])['id'])
                     repository.save(batch)
-                    binding, skipped = build_binding(contact_headers, client.fetch_list_fields(result['list_id']), market)
+                    binding, skipped = build_binding(contact_headers, client.fetch_list_fields(result['list_id']), market, item_types)
                     result['skipped_headers'] = skipped
+                    profile = expected_profile(paths[result['agent']], bound_phone_headers(binding, market.additional_phone_bindings))
+                    result['readiness'] = public_summary(profile)
                     step('importing_contacts')
                     staged = client.stage_upload(paths[result['agent']], result['list_name'] + '.csv')
                     staged_id = staged.get('file', {}).get('name')
@@ -190,6 +199,10 @@ def run_batch(batch, contents, agent_column, assignments, base_name,
                     step('verifying_contact_import')
                     client.wait_for_import(result['list_id'], result['contact_count'])
                     result['import_status'] = 'verified'
+                    registry.register(result['list_id'], profile)
+                    step('verifying_additional_phones')
+                    wait_for_phones(client, result['list_id'], profile, settings.phone_wait_seconds)
+                    result['import_status'] = 'phones_verified'
                     replace_campaign_list(client, result, lambda: repository.save(batch))
                     result.update(status='success', step='complete',
                                   message='New contacts verified and campaign list replaced. Previous lists remain in Contacts Manager; original campaign active status restored.')

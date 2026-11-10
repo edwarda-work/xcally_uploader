@@ -5,8 +5,9 @@ from datetime import datetime
 from pathlib import Path
 
 from .domain import FileResult, MarketConfig
+from .readiness import bound_phone_headers, expected_profile, public_summary, registry
 from .settings import Settings
-from .xcally import XcallyClient, build_binding, read_headers
+from .xcally import XcallyClient, build_binding, check_column_targets, read_headers, validate_phone_columns
 
 
 def make_list_name(market: MarketConfig, original_name: str, now: datetime | None = None) -> str:
@@ -30,21 +31,27 @@ def process_file(
         if csv_path.stat().st_size > settings.max_upload_bytes:
             raise ValueError(f"File exceeds the {settings.max_upload_bytes // (1024 * 1024)} MB limit.")
         headers = read_headers(csv_path)
+        check_column_targets(headers, market)
+        validate_phone_columns(csv_path)
         client = XcallyClient(settings, username, password)
+        item_types = client.contact_item_types()
         created = client.create_list(list_name)
         list_id = int(created["id"])
-        binding, skipped = build_binding(headers, client.fetch_list_fields(list_id), market)
+        binding, skipped = build_binding(headers, client.fetch_list_fields(list_id), market, item_types)
+        profile = expected_profile(csv_path, bound_phone_headers(binding, market.additional_phone_bindings))
         staged = client.stage_upload(csv_path, original_name)
         staged_id = staged.get("file", {}).get("name") if isinstance(staged.get("file"), dict) else None
         if not staged_id:
             raise RuntimeError("xCALLY did not return a staged file identifier.")
         final = client.finalize_upload(list_id, staged_id, binding)
         pid = final.get("pid")
+        registry.register(list_id, profile)
         return FileResult(
             file_name=original_name, market=market.code.value, status="success",
             message=f"Uploaded successfully into list {list_id}.", timestamp=timestamp,
             list_name=list_name, list_id=list_id,
             pid=int(pid) if isinstance(pid, int) else None, skipped_headers=skipped or None,
+            readiness=public_summary(profile),
         )
     except Exception as exc:
         return FileResult(
