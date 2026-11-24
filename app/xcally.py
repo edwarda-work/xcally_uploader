@@ -390,6 +390,68 @@ class XcallyClient:
             raise XcallyError(f'xCALLY returned only {len(rows)} of {count} realtime agents.')
         return rows
 
+    def voice_recordings(self, start: datetime, end: datetime, queue_name: str | None = None) -> list[dict]:
+        """Read recordings created in [start, end), newest first, for QA sampling.
+
+        The API documents no date-range filter, so pages are scanned newest first
+        and the scan stops once rows are older than `start`.
+        """
+        if start.tzinfo is None or end.tzinfo is None or start >= end:
+            raise ValueError('Choose a valid date range.')
+        fields = 'id,UserId,queue,duration,createdAt,membername,agentName,rating'
+        result: list[dict] = []
+        seen: set[int] = set()
+        offset = 0
+        for page in range(1, 1001):
+            params = {'fields': fields, 'limit': 250, 'offset': offset, 'page': page, 'sort': '-createdAt,-id'}
+            if queue_name:
+                params['queue'] = queue_name
+            response = self.request('GET', '/voice/recordings', params=params)
+            if not response.ok:
+                raise XcallyError(f'Unable to read voice recordings (HTTP {response.status_code}). Check xCALLY permissions.')
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise XcallyError('xCALLY returned invalid recording data.') from exc
+            rows = self.rows(data)
+            if not rows:
+                return result
+            reached_start = False
+            for row in rows:
+                identity = row.get('id')
+                if type(identity) is not int:
+                    raise XcallyError('xCALLY omitted recording IDs.')
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                if queue_name and row.get('queue') != queue_name:
+                    raise XcallyError('xCALLY returned recordings for a different campaign.')
+                try:
+                    stamp = datetime.fromisoformat(row['createdAt'].replace('Z', '+00:00'))
+                    if stamp.tzinfo is None:
+                        raise ValueError('Missing timezone')
+                except (KeyError, AttributeError, TypeError, ValueError) as exc:
+                    raise XcallyError('xCALLY returned a missing or invalid recording timestamp.') from exc
+                if stamp < start:
+                    reached_start = True
+                elif stamp < end:
+                    result.append(row)
+            offset += len(rows)
+            count = data.get('count') if isinstance(data, dict) else None
+            if reached_start or type(count) is int and offset >= count or len(rows) < 250:
+                return result
+        raise XcallyError('Recordings exceed the safe scan limit. Choose a shorter date range.')
+
+    def recording_audio(self, recording_id: int) -> requests.Response:
+        """Open a streamed download of one voice recording. The caller must close it."""
+        response = self.request('GET', f'/voice/recordings/{recording_id}/download', stream=True)
+        if not response.ok:
+            response.close()
+            if response.status_code == 404:
+                raise XcallyError('This recording file was not found in xCALLY.')
+            raise XcallyError(f'Unable to download the recording (HTTP {response.status_code}).')
+        return response
+
     def campaign_recent_calls(self, queue_id: int) -> list[dict]:
         """Read a bounded, newest-first page of Hopper History for one queue."""
         response = self.request('GET', f'/voice/queues/{queue_id}/hopper_histories', params={
