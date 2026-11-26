@@ -40,6 +40,7 @@ class CampaignWorkflowTests(unittest.TestCase):
         self.client.detach_lists.side_effect = lambda id, ids: self.links[id].difference_update(ids)
         self.client.create_list.side_effect = [{'id': 101}, {'id': 102}]
         self.client.fetch_list_fields.return_value = []
+        self.client.contact_item_types.return_value = [{'id': 2, 'name': 'Margin Number 1'}]
         self.client.stage_upload.return_value = {'file': {'name': 'staged.csv'}}
         self.client.finalize_upload.return_value = {'pid': 123}
 
@@ -116,6 +117,35 @@ class CampaignWorkflowTests(unittest.TestCase):
         for contents in [CSV.replace(b'0000000002', b''), CSV.replace(b'0000000002', b'0000000001')]:
             self.assertEqual(self.run_workflow(contents=contents)['status'], 'failed')
             self.client.create_list.assert_not_called()
+
+    def test_waits_for_additional_phones_before_swapping_lists(self):
+        contents = (b'AGENT_NAME,FIRSTNAME,MOBILE_PHONE,WALLET_1\n'
+                    b'Edward Apersil,One,0000000001,0000000011\nSamuel Ntow,Two,0000000002,0000000022\n')
+        self.client.create_list.side_effect = [{'id': 101}, {'id': 102}]
+        self.client.contacts_by_phone.side_effect = lambda list_id, phone: [{'id': int(phone), 'phone': phone}]
+        self.client.contact_phones.side_effect = lambda contact_id: [{'item': f'00000000{contact_id}{contact_id}'}]
+        result = self.run_workflow(contents=contents)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['results'][0]['readiness'], {'expected_contacts': 1, 'expected_with_phones': 1})
+        calls = [c[0] for c in self.client.method_calls]
+        self.assertLess(calls.index('contact_phones'), calls.index('assign_list'))
+
+    def test_unconfirmed_phones_leave_campaign_untouched(self):
+        contents = b'AGENT_NAME,FIRSTNAME,MOBILE_PHONE,WALLET_1\nEdward Apersil,One,0000000001,0000000011\n'
+        self.settings = Settings('https://example.invalid', '/api', True, '', '', 1, 1, 60000000, 500, 60, 0)
+        self.client.contacts_by_phone.return_value = [{'id': 1, 'phone': '0000000001'}]
+        self.client.contact_phones.return_value = []
+        result = self.run_workflow(contents=contents, assignments={'Edward Apersil': 1})
+        self.assertEqual(result['results'][0]['status'], 'failed')
+        self.assertIn('additional phones were not confirmed', result['results'][0]['message'])
+        self.client.assign_list.assert_not_called()
+        self.client.detach_lists.assert_not_called()
+
+    def test_excel_shortened_phone_fails_before_creation(self):
+        result = self.run_workflow(contents=CSV.replace(b'0000000002', b'2.33243E+11'))
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('scientific notation', result['message'])
+        self.client.create_list.assert_not_called()
 
     def test_agent_membership_must_already_be_correct(self):
         self.client.verify_agent.side_effect = XcallyError('Wrong agent')
