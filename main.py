@@ -26,6 +26,8 @@ from app.paths import PROJECT_DIR, data_directory
 from app.batches import BatchRepository
 from app.campaigns import run_batch
 from app.xcally import XcallyClient, XcallyError
+from app.qa.routes import create_router as create_qa_router
+from app.qa.store import QaRepository
 from app.readiness import check_readiness, registry as readiness_registry
 
 
@@ -35,6 +37,7 @@ history_repository = JsonHistoryRepository(DATA_DIR / "upload_history.json", set
 executor = ThreadPoolExecutor(max_workers=settings.max_workers, thread_name_prefix="xcally-upload")
 batch_repository = BatchRepository(DATA_DIR / "campaign_batches.sqlite3")
 batch_slots = threading.BoundedSemaphore(settings.max_workers)
+qa_repository = QaRepository(DATA_DIR / "qa.sqlite3")
 
 
 @asynccontextmanager
@@ -60,6 +63,11 @@ async def campaign_script() -> FileResponse:
 @app.get('/performance.js', include_in_schema=False)
 async def performance_script() -> FileResponse:
     return FileResponse(PROJECT_DIR / 'performance.js', media_type='text/javascript')
+
+
+@app.get('/qa.js', include_in_schema=False)
+async def qa_script() -> FileResponse:
+    return FileResponse(PROJECT_DIR / 'qa.js', media_type='text/javascript')
 
 
 @app.get('/agents.js', include_in_schema=False)
@@ -90,6 +98,10 @@ def campaign_credentials(username, password):
     if not all(credentials):
         raise HTTPException(status_code=401, detail="Enter xCALLY credentials or configure them on the server.")
     return credentials
+
+
+app.include_router(create_qa_router(
+    settings=settings, executor=executor, repository=qa_repository, credentials=campaign_credentials))
 
 
 @app.post("/api/campaigns/options")

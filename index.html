@@ -106,13 +106,53 @@
     .split-preview { margin-top:20px; }
     .nav-inner { overflow-x:auto; }
     .nav-button { white-space:nowrap; }
+    .workspace-switch { display:inline-flex; padding:3px; border-radius:10px; background:#323a39; }
+    .workspace-button { padding:7px 13px; border:0; border-radius:8px; background:none; color:#c7cfcd; cursor:pointer; font-weight:700; font-size:13px; }
+    .workspace-button.active { background:var(--white); color:var(--black); }
+    .nav-button[hidden] { display:none; }
+    .qa-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .qa-grid textarea,.qa-items textarea { width:100%; min-height:96px; border:1px solid var(--line); border-radius:9px; padding:11px 12px; font:inherit; resize:vertical; }
+    .bucket { display:inline-flex; border-radius:999px; padding:3px 8px; font-size:11px; font-weight:800; text-transform:uppercase; }
+    .bucket.short { background:#e8f1fb; color:#1d4f91; }
+    .bucket.medium { background:#fff4d6; color:#694b00; }
+    .bucket.long { background:#fee8f3; color:var(--cherry); }
+    .qa-call { cursor:pointer; }
+    .qa-listen { white-space:nowrap; }
+    .qa-player { display:flex; align-items:center; gap:8px; font-size:12px; }
+    .qa-player audio { width:190px; height:32px; margin:0; }
+    .qa-play-error { color:var(--danger); font-size:12px; font-weight:700; }
+    .qa-score-row > td { padding:0; background:#fff8fb; white-space:normal; }
+    .qa-score-panel { position:sticky; left:0; box-sizing:border-box; padding:16px 18px 14px; border-left:3px solid var(--cherry); }
+    .qa-agent th,.qa-agent td { padding:10px 10px; }
+    .qa-agent .qa-score-row > td { padding:0; }
+    .qa-score-head { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+    .qa-score-head .button { margin-left:auto; }
+    .qa-criteria { display:grid; gap:8px; }
+    .qa-criterion { display:grid; grid-template-columns:minmax(0,1fr) 160px; align-items:center; gap:12px; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:#fff; font-size:13px; }
+    .qa-criterion select { border:1px solid var(--line); border-radius:8px; padding:7px 9px; background:#fff; }
+    .qa-score-comment { display:block; margin-top:12px; }
+    .qa-domain { grid-column:1 / -1; margin:10px 0 2px; font-weight:700; font-size:13px; color:var(--cherry); }
+    .qa-domain-row th { text-align:left; background:#fff5f8; }
+    .qa-critical-row { margin-top:10px; border-color:#f3c2cf; background:#fff5f8; }
+    .qa-score-comment textarea { width:100%; border:1px solid var(--line); border-radius:9px; padding:9px 11px; font:inherit; resize:vertical; }
+    .qa-prototype { margin:10px 0 0; color:var(--muted); font-size:11px; font-style:italic; }
+    @media (max-width:700px) { .qa-criterion { grid-template-columns:1fr; } }
+    .qa-campaign { max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .qa-call:hover,.qa-call.selected { background:#fff8fb; }
+    .qa-answer { display:flex; gap:6px; }
+    .qa-answer label { display:inline-flex; align-items:center; gap:4px; padding:5px 9px; border:1px solid var(--line); border-radius:8px; cursor:pointer; font-size:12px; font-weight:700; }
+    .qa-answer input:checked + span { color:var(--cherry); }
+    .qa-critical { color:var(--danger); font-size:11px; font-weight:800; margin-left:6px; }
+    .qa-agent { margin-top:18px; }
+    .qa-agent h3 { margin:0 0 8px; font-size:15px; }
+    audio { width:100%; margin:8px 0 14px; }
     @media (max-width:700px) { .split-fields { grid-template-columns:1fr; } }
-    @media (max-width:700px) { .market-grid,.credentials-grid,.stats { grid-template-columns:1fr; } .history-head { align-items:flex-start; flex-direction:column; } .header-inner,main,.nav-inner { padding-left:16px; padding-right:16px; } .file-row { grid-template-columns:minmax(0,1fr) auto; } .remove { display:none; } }
+    @media (max-width:700px) { .header-inner { flex-wrap:wrap; padding-top:12px; padding-bottom:12px; } .market-grid,.credentials-grid,.stats,.qa-grid { grid-template-columns:1fr; } .history-head { align-items:flex-start; flex-direction:column; } .header-inner,main,.nav-inner { padding-left:16px; padding-right:16px; } .file-row { grid-template-columns:minmax(0,1fr) auto; } .remove { display:none; } }
   </style>
 </head>
 <body>
-  <header><div class="header-inner"><div class="brand"><span class="brand-mark">●</span> xCALLY Upload Automation</div><div id="server-status" class="status">Checking configuration</div></div></header>
-  <nav><div class="nav-inner"><button class="nav-button active" data-tab="upload">Upload</button><button class="nav-button" data-tab="split">Multi Campaigns</button><button class="nav-button" data-tab="performance">Campaign Performance</button><button class="nav-button" data-tab="agents">Agent Performance</button><button class="nav-button" data-tab="history">History</button></div></nav>
+  <header><div class="header-inner"><div class="brand"><span class="brand-mark">●</span> xCALLY Upload Automation</div><div class="workspace-switch" role="group" aria-label="Workspace"><button class="workspace-button active" data-workspace="collections" aria-pressed="true">Collections</button><button class="workspace-button" data-workspace="qa" aria-pressed="false">Quality Assurance</button></div><div id="server-status" class="status">Checking configuration</div></div></header>
+  <nav><div class="nav-inner"><button class="nav-button active" data-workspace="collections" data-tab="upload">Upload</button><button class="nav-button" data-workspace="collections" data-tab="split">Multi Campaigns</button><button class="nav-button" data-workspace="collections" data-tab="performance">Campaign Performance</button><button class="nav-button" data-workspace="collections" data-tab="agents">Agent Performance</button><button class="nav-button" data-workspace="collections" data-tab="history">History</button><button class="nav-button" data-workspace="qa" data-tab="qa-sampling" hidden>Call Sampling</button><button class="nav-button" data-workspace="qa" data-tab="qa-evaluate" hidden>Evaluate</button><button class="nav-button" data-workspace="qa" data-tab="qa-scorecards" hidden>Scorecards</button></div></nav>
   <main>
     <section id="upload" class="tab active">
       <h1>Upload contact lists</h1><p class="lead">Choose the market, add CSV files, and send them securely to xCALLY.</p>
@@ -223,6 +263,58 @@
       <div class="history-head"><div><h1>Upload history</h1><p class="lead" style="margin:5px 0 0">Review results across all markets.</p></div><div class="history-actions"><select id="history-filter" class="filter" aria-label="Filter market"><option value="">All markets</option></select><button id="clear-history" class="button button-secondary">Clear history</button></div></div>
       <div id="stats" class="stats"></div><div id="history-content"></div>
     </section>
+    <section id="qa-sampling" class="tab">
+      <h1>Call sampling</h1><p class="lead">Pick 4 calls per agent (one short, one medium and two long where possible) and share the agents out among QA evaluators.</p>
+      <div class="card">
+        <p class="section-title">xCALLY credentials</p>
+        <div class="credentials-grid">
+          <label class="field"><span>xCALLY username</span><input id="qa-username" autocomplete="username" placeholder="Use server credentials or enter username"></label>
+          <label class="field"><span>xCALLY password</span><input id="qa-password" type="password" autocomplete="current-password" placeholder="Enter password"></label>
+        </div>
+        <p class="help">Leave blank to use the server credentials. These fields are used by every QA tab.</p>
+      </div>
+      <div class="card">
+        <div class="qa-grid">
+          <label class="field"><span>From</span><input id="qa-start" type="date"></label>
+          <label class="field"><span>To (inclusive)</span><input id="qa-end" type="date"></label>
+          <label class="field"><span>Market (campaign name starts with)</span><select id="qa-market"><option value="GH">Ghana (GH)</option></select></label>
+          <label class="field"><span>Campaign name (optional)</span><input id="qa-campaign" placeholder="All campaigns" autocomplete="off"></label>
+          <label class="field"><span>QA evaluators (one per line)</span><textarea id="qa-evaluators" placeholder="Ama&#10;Kofi"></textarea></label>
+        </div>
+        <p class="help">Short is under 2 minutes, medium 2 to 5 minutes, long over 5 minutes. Empty 0:00 recordings and calls already evaluated are never picked. Periods are limited to 31 days.</p>
+        <div id="qa-sampling-error" class="preview-error" role="alert"></div>
+        <div class="actions"><button id="qa-generate" class="button button-primary">Generate sample</button></div>
+      </div>
+      <div id="qa-plan" aria-live="polite"></div>
+      <div class="card"><p class="section-title">Recent samples</p><div id="qa-plans"></div></div>
+    </section>
+    <section id="qa-evaluate" class="tab">
+      <h1>Evaluate calls</h1><p class="lead">Choose a sample, your name and a scorecard. Press ▶ Play on a call: the scoring panel opens right under it, so you can score while you listen.</p>
+      <div class="card">
+        <div class="qa-grid">
+          <label class="field"><span>Sample</span><select id="qa-eval-plan"><option value="">Select a sample</option></select></label>
+          <label class="field"><span>Evaluator</span><select id="qa-eval-evaluator" disabled><option value="">Select your name</option></select></label>
+          <label class="field"><span>Scorecard</span><select id="qa-eval-scorecard"><option value="">Select a scorecard</option></select></label>
+        </div>
+        <div id="qa-eval-error" class="preview-error" role="alert"></div>
+      </div>
+      <div id="qa-eval-calls"></div>
+      <div id="qa-eval-form"></div>
+    </section>
+    <section id="qa-scorecards" class="tab">
+      <h1>Scorecards</h1><p class="lead">Define what each call is checked against. Metrics are graded 5, 3 or 1 and weighted; a critical fail sets the total to 0%.</p>
+      <div class="card">
+        <div class="qa-grid">
+          <label class="field"><span>Scorecard name</span><input id="qa-card-name" placeholder="Collections call v1"></label>
+          <label class="field"><span>Market (optional)</span><select id="qa-card-market"><option value="">All markets</option></select></label>
+        </div>
+        <div class="qa-items" style="margin-top:14px"><label class="field"><span>Metrics, one per line: label | weight % | auto-fail (optional). Start a domain with a line like # Compliance &amp; Privacy</span><textarea id="qa-card-items" rows="8" placeholder="Type your metrics here (this grey text is only an example), or use a template below.&#10;# Compliance &amp; Privacy&#10;Identity Verification | 3&#10;Complaint Handling | 2"></textarea></label>
+          <p class="help">Weight is the metric's share of the total in % (weights should add up to 100). Add <strong>auto-fail</strong> when grading the metric 1 should fail the whole call.</p></div>
+        <div id="qa-card-error" class="preview-error" role="alert"></div>
+        <div class="actions"><button id="qa-card-save" class="button button-primary">Save scorecard</button><button id="qa-card-collections" class="button button-secondary">Use Collections template</button><button id="qa-card-chat" class="button button-secondary">Use Chat template</button></div>
+      </div>
+      <div id="qa-card-list"></div>
+    </section>
   </main>
   <script>
     const state = { files: [], uploading: false, configured: false, markets: [] };
@@ -263,13 +355,26 @@
       updateActions();
     }
 
-    document.querySelectorAll('.nav-button').forEach(button => button.addEventListener('click', () => {
+    function openTab(button) {
       document.querySelectorAll('.nav-button,.tab').forEach(node => node.classList.remove('active'));
       button.classList.add('active'); $(button.dataset.tab).classList.add('active');
       if (button.dataset.tab === 'history') loadHistory();
       if (button.dataset.tab === 'performance') window.performanceUI?.opened();
       if (button.dataset.tab === 'agents') window.agentUI?.opened();
-    }));
+      if (button.dataset.tab.startsWith('qa-')) window.qaUI?.opened(button.dataset.tab);
+    }
+    function openWorkspace(name) {
+      document.querySelectorAll('.workspace-button').forEach(node => {
+        node.classList.toggle('active', node.dataset.workspace === name);
+        node.setAttribute('aria-pressed', String(node.dataset.workspace === name));
+      });
+      document.querySelectorAll('.nav-button').forEach(node => { node.hidden = node.dataset.workspace !== name; });
+      openTab(document.querySelector(`.nav-button[data-workspace="${name}"]`));
+      try { localStorage.setItem('workspace', name); } catch (error) {}
+    }
+    document.querySelectorAll('.nav-button').forEach(button => button.addEventListener('click', () => openTab(button)));
+    document.querySelectorAll('.workspace-button').forEach(button => button.addEventListener('click', () => openWorkspace(button.dataset.workspace)));
+    try { if (localStorage.getItem('workspace') === 'qa') openWorkspace('qa'); } catch (error) {}
 
     const dropZone = $('drop-zone'), fileInput = $('file-input');
     dropZone.addEventListener('click', () => fileInput.click());
@@ -449,5 +554,6 @@
   <script src="/campaign-controls.js?v=20261019-2"></script>
   <script src="/performance.js?v=20261027-2"></script>
   <script src="/agents.js?v=20261007-1"></script>
+  <script src="/qa.js?v=20261126-2"></script>
 </body>
 </html>
