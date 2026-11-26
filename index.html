@@ -125,6 +125,8 @@
     .qa-criterion { display:grid; grid-template-columns:minmax(0,1fr) 160px; align-items:center; gap:12px; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:#fff; font-size:13px; }
     .qa-criterion select { border:1px solid var(--line); border-radius:8px; padding:7px 9px; background:#fff; }
     .qa-score-comment { display:block; margin-top:12px; }
+    .qa-domain { grid-column:1 / -1; margin:10px 0 2px; font-weight:700; font-size:13px; color:var(--cherry); }
+    .qa-domain-row th { text-align:left; background:#fff5f8; }
     .qa-critical-row { margin-top:10px; border-color:#f3c2cf; background:#fff5f8; }
     .qa-score-comment textarea { width:100%; border:1px solid var(--line); border-radius:9px; padding:9px 11px; font:inherit; resize:vertical; }
     .qa-prototype { margin:10px 0 0; color:var(--muted); font-size:11px; font-style:italic; }
@@ -294,16 +296,16 @@
       <div id="qa-eval-form"></div>
     </section>
     <section id="qa-scorecards" class="tab">
-      <h1>Scorecards</h1><p class="lead">Define what each call is checked against. A failed critical item flags the whole call.</p>
+      <h1>Scorecards</h1><p class="lead">Define what each call is checked against. Metrics are graded 5, 3 or 1 and weighted; a critical fail sets the total to 0%.</p>
       <div class="card">
         <div class="qa-grid">
           <label class="field"><span>Scorecard name</span><input id="qa-card-name" placeholder="Collections call v1"></label>
           <label class="field"><span>Market (optional)</span><select id="qa-card-market"><option value="">All markets</option></select></label>
         </div>
-        <div class="qa-items" style="margin-top:14px"><label class="field"><span>Metrics, one per line: label | weight % | auto-fail (optional: graded 1 fails the call)</span><textarea id="qa-card-items" rows="8" placeholder="Type your metrics here (this grey text is only an example), or use a template below.&#10;Accuracy &amp; Compliance | 30 | auto-fail&#10;Communication Quality | 15"></textarea></label>
-          <p class="help">Weight is how much the item counts (default 1). Add <strong>critical</strong> for must-do items: failing one flags the whole call.</p></div>
+        <div class="qa-items" style="margin-top:14px"><label class="field"><span>Metrics, one per line: label | weight % | auto-fail (optional). Start a domain with a line like # Compliance &amp; Privacy</span><textarea id="qa-card-items" rows="8" placeholder="Type your metrics here (this grey text is only an example), or use a template below.&#10;# Compliance &amp; Privacy&#10;Identity Verification | 3&#10;Complaint Handling | 2"></textarea></label>
+          <p class="help">Weight is the metric's share of the total in % (weights should add up to 100). Add <strong>auto-fail</strong> when grading the metric 1 should fail the whole call.</p></div>
         <div id="qa-card-error" class="preview-error" role="alert"></div>
-        <div class="actions"><button id="qa-card-save" class="button button-primary">Save scorecard</button><button id="qa-card-voice" class="button button-secondary">Use Voice template</button><button id="qa-card-chat" class="button button-secondary">Use Chat template</button></div>
+        <div class="actions"><button id="qa-card-save" class="button button-primary">Save scorecard</button><button id="qa-card-collections" class="button button-secondary">Use Collections template</button><button id="qa-card-chat" class="button button-secondary">Use Chat template</button></div>
       </div>
       <div id="qa-card-list"></div>
     </section>
@@ -500,6 +502,6 @@
   <script src="/campaign-controls.js?v=20261019-2"></script>
   <script src="/performance.js?v=20261027-2"></script>
   <script src="/agents.js?v=20261007-1"></script>
-  <script src="/qa.js?v=20261123-1"></script>
+  <script src="/qa.js?v=20261126-2"></script>
 </body>
 </html>

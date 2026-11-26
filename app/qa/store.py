@@ -41,7 +41,7 @@ class QaRepository:
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
             # Added with the 5/3/1 scorecard engine; older databases get the columns here.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(evaluations)")}
-            for column, kind in (("raw_percent", "REAL"), ("overall_fails", "INTEGER"), ("critical_reason", "TEXT")):
+            for column, kind in (("raw_percent", "REAL"), ("overall_fails", "INTEGER"), ("critical_reason", "TEXT"), ("domains", "TEXT")):
                 if column not in columns:
                     db.execute(f"ALTER TABLE evaluations ADD COLUMN {column} {kind}")
             db.execute("CREATE INDEX IF NOT EXISTS evaluations_recording ON evaluations(recording_id)")
@@ -155,6 +155,7 @@ class QaRepository:
             "sync_status": "not_synced", "created_at": now, "updated_at": now,
             "raw_percent": result["raw_percent"], "overall_fails": result["overall_fails"],
             "critical_reason": critical_reason.strip() if critical_fail else "",
+            "domains": json.dumps(result["domains"]),
         }
         with self.connect() as db:
             db.execute(f"INSERT INTO evaluations ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
@@ -202,4 +203,5 @@ class QaRepository:
         data["items"] = json.loads(data["items"])
         data["answers"] = json.loads(data["answers"])
         data["critical_failed"] = bool(data["critical_failed"])
+        data["domains"] = json.loads(data.get("domains") or "[]")
         return data

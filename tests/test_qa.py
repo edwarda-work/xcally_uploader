@@ -19,7 +19,7 @@ class ScoringTests(unittest.TestCase):
     def test_full_and_half_weight(self):
         self.assertEqual(score(validate_items(ITEMS), ALL_FIVE),
                          {"percent": 100.0, "raw_percent": 100.0, "critical_failed": False,
-                          "auto_failed": [], "overall_fails": 0})
+                          "auto_failed": [], "overall_fails": 0, "domains": []})
         result = score(validate_items(ITEMS), {"greeting": "3", "verify": "5", "offer": "3"})
         self.assertEqual((result["percent"], result["overall_fails"]), (65.0, 2))
 
@@ -41,18 +41,30 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual((result["percent"], result["raw_percent"]), (0.0, 76.0))
         self.assertEqual((result["critical_failed"], result["auto_failed"]), (True, ["verify"]))
 
-    def test_voice_example(self):
-        answers = {"accuracy_compliance": "1", "experience_empathy": "5", "ownership_resolution": "5",
-                   "communication": "5", "business_risk": "5"}
-        self.assertEqual(score(validate_items(TEMPLATES["voice"]["items"]), answers)["percent"], 76.0)
+    def test_collections_template_matches_params_sheet(self):
+        items = validate_items(TEMPLATES["collections"]["items"])
+        self.assertEqual(len(items), 21)
+        self.assertEqual(sum(item["weight"] for item in items), 100)
+        domains = score(items, {item["key"]: "5" for item in items})["domains"]
+        self.assertEqual([(d["name"], d["weight"], d["percent"]) for d in domains], [
+            ("Active Repayment Pursuit", 60, 100.0), ("Contextual Intelligence", 10, 100.0),
+            ("Compliance & Privacy", 10, 100.0), ("Call Continuity", 10, 100.0),
+            ("Customer Communication", 10, 100.0)])
 
-    def test_templates_match_the_sheet(self):
-        for kind in ("voice", "chat"):
-            items = validate_items(TEMPLATES[kind]["items"])
-            self.assertEqual(sum(item["weight"] for item in items), 100)
-        self.assertEqual([i["key"] for i in validate_items(TEMPLATES["chat"]["items"]) if i["auto_fail"]],
+    def test_collections_example(self):
+        items = validate_items(TEMPLATES["collections"]["items"])
+        answers = {item["key"]: "5" for item in items}
+        answers.update(commitment_quality="3", empathy="na")    # 15 -> 7.5; Empathy (2) left out
+        result = score(items, answers)
+        self.assertEqual((result["percent"], result["overall_fails"]), (92.3, 1))  # 90.5 / 98
+        by_name = {d["name"]: d["percent"] for d in result["domains"]}
+        self.assertEqual((by_name["Active Repayment Pursuit"], by_name["Customer Communication"]), (87.5, 100.0))
+
+    def test_chat_template(self):
+        items = validate_items(TEMPLATES["chat"]["items"])
+        self.assertEqual(sum(item["weight"] for item in items), 100)
+        self.assertEqual([i["key"] for i in items if i["auto_fail"]],
                          ["accuracy_compliance", "resolution_ownership", "personalisation_tone"])
-        self.assertFalse(any(i["auto_fail"] for i in validate_items(TEMPLATES["voice"]["items"])))
 
     def test_legacy_critical_flag_reads_as_auto_fail(self):
         self.assertTrue(validate_items([{"key": "a", "label": "A", "critical": True}])[0]["auto_fail"])
@@ -121,6 +133,7 @@ class QaRepositoryTests(unittest.TestCase):
                                             answers=ALL_FIVE, critical_fail=True, critical_reason=" Fraud risk ")
         self.assertEqual((saved["percent"], saved["raw_percent"], saved["critical_failed"], saved["critical_reason"]),
                          (0.0, 100.0, True, "Fraud risk"))
+        self.assertEqual(self.repo.get_evaluation(saved["id"])["domains"], [])
 
     def test_old_database_gets_new_columns(self):
         import sqlite3

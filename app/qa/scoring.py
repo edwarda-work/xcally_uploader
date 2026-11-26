@@ -1,12 +1,14 @@
-"""Scorecard engine, following the QA lead's "Metrics and weights" sheet.
+"""Scorecard engine, following the QA lead's sheets.
 
-- Each metric has a weight (the voice and chat scorecards each add up to 100).
+- Each metric has a weight (each scorecard adds up to 100) and may belong to a
+  domain; the Collections scorecard has 5 domains weighted 60/10/10/10/10.
 - Each metric is graded 5, 3 or 1, or N/A when it does not apply to the call.
 - The score is the points earned over the weight of the metrics that apply.
 - Critical fail (chosen by the evaluator) makes the total 0%. A metric marked
   auto_fail does the same when it is graded 1 (the chat rule that missing
   Accuracy & Compliance or Resolution & Ownership fails the interaction).
 - Overall fails counts the graded metrics that scored below 5, ignoring N/A.
+- Each domain also gets its own percent, for coaching on the weakest area.
 
 The full scorecard and grades stay local. xCALLY will receive only an integer
 `rating` and a `commentNote` summary on the VoiceRecording.
@@ -18,16 +20,46 @@ GRADES = {"5": 5, "3": 3, "1": 1}
 NOT_APPLICABLE = "na"
 
 # Built-in starting points, copied from the QA lead's sheet (weights in %).
+COLLECTIONS_DOMAINS = {
+    "Active Repayment Pursuit": [
+        ("payment_facilitation", "Payment Facilitation", 10),
+        ("commitment_quality", "Commitment Quality", 15),
+        ("amount_due_date", "Amount and Due Date Stated", 10),
+        ("objection_challenge", "Objection Challenge", 5),
+        ("ptp_attempt_quality", "PTP Attempt Quality", 15),
+        ("ladder_utilization", "Ladder Utilization", 5),
+    ],
+    "Contextual Intelligence": [
+        ("profile_history", "Profile/History Awareness", 4),
+        ("dpd_alignment", "DPD Alignment", 2),
+        ("live_signal_parsing", "Live Signal Parsing (acting on information on the call)", 4),
+    ],
+    "Compliance & Privacy": [
+        ("identity_verification", "Identity Verification", 3),
+        ("third_party_protection", "Third-Party Data Protection", 3),
+        ("consequence_language", "Approved Consequence Language", 2),
+        ("complaint_handling", "Complaint Handling", 2),
+    ],
+    "Call Continuity": [
+        ("accurate_documentation", "Accurate Documentation", 4),
+        ("outcome_recording", "Outcome Recording", 4),
+        ("follow_up_clarity", "Follow-Up Clarity", 2),
+    ],
+    "Customer Communication": [
+        ("clarity", "Clarity", 2),
+        ("confidence_control", "Confidence and Control", 2),
+        ("empathy", "Empathy", 2),
+        ("active_listening", "Active Listening", 2),
+        ("professionalism", "Professionalism", 2),
+    ],
+}
+
+# Built-in starting points, copied from the QA lead's sheets (weights in %).
 TEMPLATES = {
-    "voice": {
-        "name": "Voice QA",
-        "items": [
-            {"key": "accuracy_compliance", "label": "Accuracy & Compliance", "weight": 30},
-            {"key": "experience_empathy", "label": "Customer Experience & Empathy", "weight": 20},
-            {"key": "ownership_resolution", "label": "Ownership & Resolution", "weight": 20},
-            {"key": "communication", "label": "Communication Quality", "weight": 15},
-            {"key": "business_risk", "label": "Business & Risk Impact", "weight": 15},
-        ],
+    "collections": {
+        "name": "Collections QA",
+        "items": [{"key": key, "label": label, "weight": weight, "domain": domain}
+                  for domain, metrics in COLLECTIONS_DOMAINS.items() for key, label, weight in metrics],
     },
     "chat": {
         "name": "Chat QA",
@@ -63,7 +95,8 @@ def validate_items(items: list[dict]) -> list[dict]:
             raise ValueError(f"Item {key} must have a positive weight.")
         seen.add(key)
         auto_fail = bool(item.get("auto_fail", item.get("critical", False)))
-        clean.append({"key": key, "label": label, "weight": weight, "auto_fail": auto_fail})
+        domain = str(item.get("domain") or "").strip() or None
+        clean.append({"key": key, "label": label, "weight": weight, "auto_fail": auto_fail, "domain": domain})
     return clean
 
 
@@ -88,7 +121,8 @@ def score(items: list[dict], answers: dict[str, str], critical_fail: bool = Fals
     answers maps every item key to "5", "3", "1" or "na". Returns:
     percent (0 when critically failed, None when every metric is N/A),
     raw_percent (the score before any critical fail), critical_failed,
-    auto_failed (keys of auto_fail metrics graded 1) and overall_fails.
+    auto_failed (keys of auto_fail metrics graded 1), overall_fails and domains
+    (name, weight, percent per domain, in scorecard order; empty without domains).
     """
     missing = [item["key"] for item in items if item["key"] not in answers]
     if missing:
@@ -112,7 +146,24 @@ def score(items: list[dict], answers: dict[str, str], critical_fail: bool = Fals
         "critical_failed": critical_failed,
         "auto_failed": auto_failed,
         "overall_fails": sum(1 for _, grade in graded if grade < 5),
+        "domains": domain_scores(items, answers),
     }
+
+
+def domain_scores(items: list[dict], answers: dict[str, str]) -> list[dict]:
+    """Percent per domain over its graded metrics; None when all are N/A."""
+    order: dict[str, dict] = {}
+    for item in items:
+        if not item.get("domain"):
+            continue
+        domain = order.setdefault(item["domain"], {"name": item["domain"], "weight": 0, "earned": 0.0, "possible": 0})
+        domain["weight"] += item["weight"]
+        if answers[item["key"]] != NOT_APPLICABLE:
+            domain["possible"] += item["weight"]
+            domain["earned"] += grade_points(GRADES[answers[item["key"]]], item["weight"])
+    return [{"name": d["name"], "weight": d["weight"],
+             "percent": round(d["earned"] / d["possible"] * 100, 1) if d["possible"] else None}
+            for d in order.values()]
 
 
 def to_xcally_rating(percent: float | None, critical_failed: bool) -> int | None:

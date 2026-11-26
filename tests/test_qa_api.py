@@ -96,7 +96,7 @@ class QaRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_templates_are_served(self):
         templates = (await self.call("GET", "/scorecard-templates")())["templates"]
-        self.assertEqual(set(templates), {"voice", "chat"})
+        self.assertEqual(set(templates), {"collections", "chat"})
 
     async def test_evaluation_save_and_list(self):
         card = self.repo.create_scorecard("Calls v1", ITEMS)
