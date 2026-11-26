@@ -59,13 +59,15 @@
 
   function parseItems(text) {
     const taken = new Set();
-    return text.split('\n').map(line => line.trim()).filter(Boolean).map((line, index) => {
+    let domain = null;
+    return text.split('\n').map(line => line.trim()).filter(Boolean).flatMap((line, index) => {
+      if (line.startsWith('#')) { domain = line.replace(/^#+/, '').trim() || null; return []; }
       const [label, weightText, flag] = line.split('|').map(part => (part || '').trim());
       const weight = weightText ? Number(weightText) : 1;
       if (!label) throw new Error(`Line ${index + 1} needs a label.`);
       if (!Number.isFinite(weight) || weight <= 0) throw new Error(`Line ${index + 1}: weight must be a positive number.`);
       if (flag && !['auto-fail', 'critical'].includes(flag.toLowerCase())) throw new Error(`Line ${index + 1}: the third part can only be "auto-fail".`);
-      return {key: slug(label, taken), label, weight, auto_fail: Boolean(flag)};
+      return [{key: slug(label, taken), label, weight, auto_fail: Boolean(flag), domain}];
     });
   }
 
@@ -80,7 +82,8 @@
       <span class="count">${escapeHtml(card.market || 'All markets')} · ${card.items.length} items</span></div>
       <button class="button button-secondary" data-archive="${escapeHtml(card.id)}">Archive</button></div>
       <div class="table-wrap"><table><thead><tr><th>Metric</th><th>Weight</th><th>Graded 1 fails the call</th></tr></thead><tbody>
-      ${card.items.map(item => `<tr><td>${escapeHtml(item.label)}</td><td>${item.weight}</td><td>${autoFail(item) ? 'Yes' : ''}</td></tr>`).join('')}
+      ${byDomain(card.items).map(group => (group.domain ? `<tr class="qa-domain-row"><th colspan="3">${escapeHtml(group.domain)} · ${group.weight}%</th></tr>` : '') +
+        group.items.map(item => `<tr><td>${escapeHtml(item.label)}</td><td>${item.weight}</td><td>${autoFail(item) ? 'Yes' : ''}</td></tr>`).join('')).join('')}
       </tbody></table></div></div>`).join('') : '<div class="empty">No scorecards yet. Create one above.</div>';
     document.querySelectorAll('[data-archive]').forEach(button => button.addEventListener('click', async () => {
       if (!confirm('Archive this scorecard? Past evaluations keep their copy of it.')) return;
@@ -94,6 +97,17 @@
   }
 
   const autoFail = item => Boolean(item.auto_fail ?? item.critical);
+  // Consecutive items sharing a domain, in scorecard order: [{domain, weight, items}].
+  function byDomain(items) {
+    const groups = [];
+    for (const item of items) {
+      const last = groups[groups.length - 1];
+      if (last && last.domain === (item.domain || null)) { last.items.push(item); last.weight += item.weight; }
+      else groups.push({domain: item.domain || null, weight: item.weight, items: [item]});
+    }
+    return groups;
+  }
+  const domainsText = e => (e.domains || []).map(d => `${d.name} ${d.percent == null ? 'N/A' : d.percent + '%'}`).join(' · ');
   const percentText = e => e.percent == null ? 'N/A' : `${e.percent}%`;
   const resultText = e => `${percentText(e)}${e.critical_failed ? ' · critical fail' : ''}${e.overall_fails ? ` · ${e.overall_fails} below 5` : ''}`;
 
@@ -289,7 +303,7 @@
     const existing = state.evaluations.get(recordingId);
     const card = state.scorecards.find(c => c.id === $('qa-eval-scorecard').value);
     const body = existing
-      ? `<div class="notice">Scored by ${escapeHtml(existing.evaluator)}: ${escapeHtml(resultText(existing))}${existing.critical_failed && existing.raw_percent != null ? ` (${existing.raw_percent}% before the critical fail)` : ''}.${existing.critical_reason ? ` Critical fail: ${escapeHtml(existing.critical_reason)}.` : ''}${existing.comment ? ` Comment: ${escapeHtml(existing.comment)}` : ''}</div>`
+      ? `<div class="notice">Scored by ${escapeHtml(existing.evaluator)}: ${escapeHtml(resultText(existing))}${existing.critical_failed && existing.raw_percent != null ? ` (${existing.raw_percent}% before the critical fail)` : ''}.${existing.critical_reason ? ` Critical fail: ${escapeHtml(existing.critical_reason)}.` : ''}${existing.domains?.length ? `<br>${escapeHtml(domainsText(existing))}` : ''}${existing.comment ? ` Comment: ${escapeHtml(existing.comment)}` : ''}</div>`
       : card ? formHtml(card) : '<div class="notice">Choose a scorecard at the top of the page to score this call.</div>';
     const panel = document.createElement('tr');
     panel.className = 'qa-score-row';
@@ -315,8 +329,8 @@
 
   function formHtml(card) {
     return `<div class="qa-criteria">
-      ${card.items.map(item => `<label class="qa-criterion"><span>${escapeHtml(item.label)} <span class="count">${item.weight}%</span>${autoFail(item) ? '<span class="qa-critical" title="Graded 1 fails the whole call">AUTO-FAIL</span>' : ''}</span>
-        <select data-item="${escapeHtml(item.key)}"><option value="">Select…</option><option value="5">5 · Met fully</option><option value="3">3 · Partly met</option><option value="1">1 · Missed</option><option value="na">N/A</option></select></label>`).join('')}
+      ${byDomain(card.items).map(group => (group.domain ? `<p class="qa-domain">${escapeHtml(group.domain)} <span class="count">${group.weight}%</span></p>` : '') + group.items.map(item => `<label class="qa-criterion"><span>${escapeHtml(item.label)} <span class="count">${item.weight}%</span>${autoFail(item) ? '<span class="qa-critical" title="Graded 1 fails the whole call">AUTO-FAIL</span>' : ''}</span>
+        <select data-item="${escapeHtml(item.key)}"><option value="">Select…</option><option value="5">5 · Met fully</option><option value="3">3 · Partly met</option><option value="1">1 · Missed</option><option value="na">N/A</option></select></label>`).join('')).join('')}
       </div>
       <div class="qa-criterion qa-critical-row"><label for="qa-critical-select"><strong>Critical fail</strong> <span class="count">sets the total to 0%</span></label>
         <select id="qa-critical-select" data-critical><option value="no">No</option><option value="yes">Yes</option></select></div>
@@ -399,15 +413,18 @@
   async function useTemplate(kind) {
     try {
       if ($('qa-card-items').value.trim() && !confirm('Replace the items you typed with this template?')) return;
-      if (!state.templates) state.templates = (await request('/api/qa/scorecard-templates', {}, 'Unable to load templates.')).templates;
+      if (!state.templates?.[kind]) state.templates = (await request('/api/qa/scorecard-templates', {}, 'Unable to load templates.')).templates;
       const template = state.templates[kind];
-      $('qa-card-items').value = template.items.map(item => [item.label, item.weight, ...(item.auto_fail ? ['auto-fail'] : [])].join(' | ')).join('\n');
+      if (!template) throw new Error('This template is not available yet. Restart the app (stop it and run ./run.sh again), then reload the page.');
+      $('qa-card-items').value = byDomain(template.items).map(group =>
+        [...(group.domain ? [`# ${group.domain}`] : []),
+         ...group.items.map(item => [item.label, item.weight, ...(item.auto_fail ? ['auto-fail'] : [])].join(' | '))].join('\n')).join('\n');
       if (!$('qa-card-name').value.trim()) $('qa-card-name').value = template.name;
       $('qa-card-error').textContent = '';
       $('qa-card-items').focus();
     } catch (error) { $('qa-card-error').textContent = error.message; }
   }
-  $('qa-card-voice').addEventListener('click', () => useTemplate('voice'));
+  $('qa-card-collections').addEventListener('click', () => useTemplate('collections'));
   $('qa-card-chat').addEventListener('click', () => useTemplate('chat'));
   $('qa-eval-plan').addEventListener('change', choosePlan);
   $('qa-eval-evaluator').addEventListener('change', chooseEvaluator);
