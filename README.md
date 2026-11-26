@@ -75,6 +75,24 @@ submission use multipart credentials or configured server credentials. Submissio
 accepts `file`, `market`, `agent_column`, `assignments` (JSON mapping CSV names to
 agent IDs), `batch_id` (UUID), and optional `base_name`.
 
+## Additional phones and list readiness
+
+`DISBURSEMENT_WALLET`, `WALLET_1`, and `WALLET_2` are imported as xCALLY Additional
+phones (contact item types Disbursement Wallet, Margin Number 1, and Margin Number 2),
+keyed by item type name exactly as the xCALLY import screen does. `MARGIN_PHONENUMBER1/2`
+are not uploaded. xCALLY keeps each number once per contact. Files whose phone columns
+contain Excel scientific notation (for example `2.33553E+11`), or two columns targeting
+the same field, are rejected before anything is written to xCALLY.
+
+xCALLY imports in the background: contacts first, then Additional phones. After an upload
+the Upload tab checks the list every 15 seconds and shows when it is ready to add to a
+campaign; History has a **Check** button per list (`POST /api/uploads/{list_id}/readiness`,
+read only). Phones are verified on up to five sample contacts from the end of the file.
+Their main phone numbers are held in memory only, so after an app restart only the
+contact count can be checked. Multi Campaigns waits for the sample phones before
+swapping campaign lists (`XCALLY_PHONE_WAIT_SECONDS`, default 180); if they are not
+confirmed, the campaign is left unchanged.
+
 ## Campaign performance
 
 Each selected campaign shows today's **Total answered**, **Total calls**,
